@@ -17,7 +17,7 @@ from typing import List, Dict, Any
 # Add src directory to path for imports
 sys.path.append(str(Path(__file__).parent / "src"))
 
-from testing.automated_tester import AutomatedTester
+from automated_tester import AutomatedTester
 from problems import load_code_generation_dataset
 
 

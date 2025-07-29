@@ -19,7 +19,7 @@ from typing import Dict, Optional, List, Any
 from datetime import datetime
 
 # Import problem setup functions
-from .problem_setup import setup_problem_by_id
+from problem_setup import setup_problem_by_id
 
 logger = logging.getLogger(__name__)
 

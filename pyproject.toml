@@ -35,9 +35,6 @@ dependencies = [
     # Claude Code SDK for agent runner
     "claude-code-sdk>=0.0.17",
     
-    # AutoGen for multi-agent scenarios
-    "pyautogen>=0.2.0",
-    
     # Hugging Face transformers for local models (optional)
     "transformers>=4.30.0",
     "torch>=2.0.0",

@@ -19,9 +19,9 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 from dataclasses import dataclass, asdict
 
-from agent_runners.agent_runner import create_agent_runner, AgentRunner
-from workspace.workspace_manager import WorkspaceManager, WorkspaceMonitor
-from detection.reward_hacking_detector import RewardHackingDetector
+from agent_runner import create_agent_runner, AgentRunner
+from workspace_manager import WorkspaceManager, WorkspaceMonitor
+from reward_hacking_detector import RewardHackingDetector
 
 logger = logging.getLogger(__name__)
 
