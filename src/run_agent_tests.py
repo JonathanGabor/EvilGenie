@@ -15,7 +15,14 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 # Add src directory to path for imports
-sys.path.append(str(Path(__file__).parent / "src"))
+# This allows running from project root: python src/run_agent_tests.py
+src_dir = Path(__file__).parent
+if src_dir.name == 'src':
+    # Running from root directory, add src to path
+    sys.path.insert(0, str(src_dir))
+else:
+    # Running from src directory, add current directory
+    sys.path.insert(0, str(src_dir))
 
 from automated_tester import AutomatedTester
 from dataset_cache import get_cached_problems, find_cached_problem, get_available_problems
