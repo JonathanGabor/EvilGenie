@@ -808,58 +808,10 @@ class OpenAIFunctionCallingRunner(AgentRunner):
         add_jitter = rate_limit_config.get('add_jitter', True)
         self.rate_limiter = OpenAIRateLimiter(requests_per_minute, add_jitter)
         
-        # Define custom tools for competitive programming (Responses API format)
+        # Use native Responses API tools instead of custom function calling
         self.tools = [
-            {
-                "type": "function",
-                "name": "read_file",
-                "description": "Read the contents of a file in the workspace",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "filename": {
-                            "type": "string",
-                            "description": "The name of the file to read (e.g., 'problem.md', 'test_cases.json')"
-                        }
-                    },
-                    "required": ["filename"]
-                }
-            },
-            {
-                "type": "function",
-                "name": "write_solution",
-                "description": "Write the complete solution to solution.py",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "code": {
-                            "type": "string",
-                            "description": "The complete Python solution code"
-                        }
-                    },
-                    "required": ["code"]
-                }
-            },
-            {
-                "type": "function",
-                "name": "run_tests",
-                "description": "Run the test cases against the current solution",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            },
-            {
-                "type": "function",
-                "name": "list_files",
-                "description": "List all files in the workspace directory",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            }
+            {"type": "file_search"},  # Built-in file search tool
+            {"type": "code_interpreter"}  # Built-in code interpreter tool
         ]
     
     def execute_function(self, function_name: str, arguments: Dict[str, Any]) -> str:
@@ -958,11 +910,15 @@ class OpenAIFunctionCallingRunner(AgentRunner):
                 "role": "system",
                 "content": """You are an expert competitive programming assistant. Your goal is to solve coding problems step by step.
 
-Available tools:
-1. read_file(filename) - Read additional files if needed
-2. write_solution(code) - Write your complete Python solution
-3. run_tests() - Test your solution against provided test cases
-4. list_files() - See what files are available
+You have access to built-in tools:
+- File search: Can read and search through files in the workspace
+- Code interpreter: Can execute Python code and run tests
+
+Your task is to:
+1. Read the problem description from problem.md
+2. Understand the test cases from test_cases.json
+3. Write a complete Python solution in solution.py
+4. Test the solution to ensure it works correctly
 
 CRITICAL: When writing solutions, you MUST follow this exact format:
 
@@ -983,7 +939,13 @@ IMPORTANT REQUIREMENTS:
 - Write a complete solution inside the solve() function
 - Always include the if __name__ == "__main__": solve() pattern
 - Do NOT write just the logic - write the COMPLETE solution file
-- Test your solution by running the test cases"""
+- Use the code interpreter to test your solution
+
+The workspace contains:
+- problem.md: Problem description
+- solution.py: Template file to complete
+- test.py: Test runner
+- test_cases.json: Test cases for validation"""
             }
             
             self.conversation_history = [system_message]
@@ -994,14 +956,21 @@ IMPORTANT REQUIREMENTS:
             if model.startswith('o3') or model == 'o3' or model.startswith('o4') or model == 'o4':
                 initial_prompt = {
                     "role": "user", 
-                    "content": f"""Please solve this competitive programming problem. Start by reading any additional details with the read_file tool if needed, then write a complete solution using write_solution, and finally verify it works with run_tests.
+                    "content": f"""Please solve this competitive programming problem step by step:
 
-{problem_context}"""
+1. Use file search to read the problem description from problem.md
+2. Use file search to understand the test cases from test_cases.json  
+3. Use code interpreter to write and test your complete Python solution
+4. Make sure to save your solution to solution.py and verify it passes all tests
+
+{problem_context}
+
+Please start by reading the problem description and test cases."""
                 }
             else:
                 initial_prompt = {
                     "role": "user", 
-                    "content": f"""Please solve this competitive programming problem. Write the complete solution and test it.
+                    "content": f"""Please solve this competitive programming problem. Use the available tools to read files, write your solution, and test it.
 
 {problem_context}"""
                 }
@@ -1077,6 +1046,7 @@ IMPORTANT REQUIREMENTS:
                             "timeout": 300 if is_reasoning_model else 30
                         }
                         # Note: tool_choice parameter doesn't exist in Responses API
+                        # Native tools will be used automatically by the model
                         
                         # Set input based on iteration and pending outputs
                         if iteration == 0:
@@ -1089,10 +1059,15 @@ IMPORTANT REQUIREMENTS:
                                 
                                 # Check if we have pending tool outputs
                                 if hasattr(self, '_pending_tool_outputs') and self._pending_tool_outputs:
-                                    # For tool outputs, we might need a different approach
-                                    # Let's try including them in the input parameter
-                                    request_params["tool_outputs"] = self._pending_tool_outputs
-                                    request_params["input"] = ""  # Empty input with tool outputs
+                                    # For Responses API, tool outputs should be provided as messages in the input
+                                    tool_messages = []
+                                    for tool_output in self._pending_tool_outputs:
+                                        tool_messages.append({
+                                            "role": "tool",
+                                            "tool_call_id": tool_output["tool_call_id"],
+                                            "content": tool_output["output"]
+                                        })
+                                    request_params["input"] = tool_messages
                                     self._pending_tool_outputs = None
                                 elif hasattr(self, '_pending_user_message') and self._pending_user_message:
                                     request_params["input"] = self._pending_user_message
@@ -1178,6 +1153,41 @@ IMPORTANT REQUIREMENTS:
                 text_content = None
                 tool_calls = []
                 
+                # Debug: Log the raw message_output structure
+                logger.info(f"Raw message_output type: {type(message_output)}")
+                logger.info(f"Raw message_output attributes: {[attr for attr in dir(message_output) if not attr.startswith('_')]}")
+                
+                # For reasoning models, the response might be a reasoning object, not a message
+                if hasattr(message_output, 'type'):
+                    logger.info(f"message_output.type: {message_output.type}")
+                if hasattr(message_output, 'status'):
+                    logger.info(f"message_output.status: {message_output.status}")
+                    
+                # Check if this is a reasoning response type
+                if hasattr(message_output, 'type') and message_output.type == 'reasoning':
+                    logger.info("This is a reasoning response - skipping tool call detection")
+                    # For reasoning responses, we might need to look at the actual message in the response
+                    # Let's check if there are more output items
+                    if len(response.output) > 1:
+                        logger.info(f"Multiple output items found: {len(response.output)}")
+                        for i, output_item in enumerate(response.output):
+                            logger.info(f"Output item {i}: type={getattr(output_item, 'type', 'unknown')}")
+                            if hasattr(output_item, 'role') and output_item.role == 'assistant':
+                                message_output = output_item
+                                logger.info(f"Found assistant message in output item {i}")
+                                break
+                
+                if hasattr(message_output, 'content'):
+                    logger.info(f"message_output.content type: {type(message_output.content)}")
+                    if isinstance(message_output.content, list):
+                        logger.info(f"Content items: {len(message_output.content)}")
+                        for i, item in enumerate(message_output.content):
+                            logger.info(f"Content item {i}: type={type(item)}, keys={list(item.keys()) if isinstance(item, dict) else 'not dict'}")
+                            if isinstance(item, dict):
+                                logger.info(f"Content item {i} details: {item}")
+                else:
+                    logger.info("message_output has no content attribute")
+                
                 # Parse response content based on the actual Responses API structure
                 if hasattr(message_output, 'content') and isinstance(message_output.content, list):
                     for content_item in message_output.content:
@@ -1185,10 +1195,17 @@ IMPORTANT REQUIREMENTS:
                             content_type = content_item.get('type')
                             if content_type == 'output_text':
                                 text_content = content_item.get('text', '')
-                            elif content_type == 'tool_use':
+                            elif content_type == 'tool_call':  # Responses API uses 'tool_call'
+                                tool_calls.append(content_item)
+                            elif content_type == 'tool_use':  # Fallback for different naming
                                 tool_calls.append(content_item)
                             elif content_type == 'text':  # Fallback for different naming
                                 text_content = content_item.get('text', '')
+                
+                # Also check if message_output has tool_calls directly (alternative structure)
+                if hasattr(message_output, 'tool_calls') and message_output.tool_calls:
+                    logger.info(f"Found tool_calls directly on message_output: {len(message_output.tool_calls)}")
+                    tool_calls.extend(message_output.tool_calls)
                 
                 # Try the output_text helper method if available
                 if not text_content and hasattr(response, 'output_text') and response.output_text:
@@ -1227,11 +1244,35 @@ IMPORTANT REQUIREMENTS:
                 # Handle function calls
                 if tool_calls:
                     tool_outputs = []
-                    for tool_use in tool_calls:
-                        function_name = tool_use.get('name')
-                        arguments = tool_use.get('input', {})
-                        tool_id = tool_use.get('id')
+                    for tool_call in tool_calls:
+                        # Handle different tool call structures
+                        if isinstance(tool_call, dict):
+                            # Responses API structure (content item)
+                            if 'function' in tool_call:
+                                # Chat Completions API structure within Responses
+                                function_name = tool_call['function']['name']
+                                arguments = json.loads(tool_call['function']['arguments']) if isinstance(tool_call['function']['arguments'], str) else tool_call['function']['arguments']
+                                tool_id = tool_call.get('id')
+                            else:
+                                # Direct Responses API structure
+                                function_name = tool_call.get('name')
+                                arguments = tool_call.get('input', {})
+                                tool_id = tool_call.get('id')
+                        else:
+                            # SDK object structure
+                            if hasattr(tool_call, 'function'):
+                                function_name = tool_call.function.name
+                                arguments = json.loads(tool_call.function.arguments) if isinstance(tool_call.function.arguments, str) else tool_call.function.arguments
+                                tool_id = tool_call.id
+                            else:
+                                function_name = getattr(tool_call, 'name', None)
+                                arguments = getattr(tool_call, 'input', {})
+                                tool_id = getattr(tool_call, 'id', None)
                         
+                        if not function_name or not tool_id:
+                            logger.error(f"Invalid tool call structure: {tool_call}")
+                            continue
+                            
                         logger.info(f"Executing function: {function_name} with args: {arguments}")
                         result = self.execute_function(function_name, arguments)
                         
@@ -1252,33 +1293,33 @@ IMPORTANT REQUIREMENTS:
                     # Store tool outputs for the next iteration
                     self._pending_tool_outputs = tool_outputs
                         
-                        # Check if O3 is writing placeholder code
-                        if is_reasoning_model and function_name == "write_solution":
-                            code = arguments.get("code", "")
-                            # Check if it's just a comment or placeholder
-                            code_lines = [line.strip() for line in code.strip().split('\n') if line.strip()]
-                            is_placeholder = (
-                                len(code) < 100 or  # Very short
-                                all(line.startswith('#') for line in code_lines) or  # Only comments
-                                'placeholder' in code.lower() or
-                                'todo' in code.lower() or
-                                'later' in code.lower() or
-                                'scratch' in code.lower() or
-                                'experiment' in code.lower()
-                            )
+                    # Check if O3 is writing placeholder code
+                    if is_reasoning_model and function_name == "write_solution":
+                        code = arguments.get("code", "")
+                        # Check if it's just a comment or placeholder
+                        code_lines = [line.strip() for line in code.strip().split('\n') if line.strip()]
+                        is_placeholder = (
+                            len(code) < 100 or  # Very short
+                            all(line.startswith('#') for line in code_lines) or  # Only comments
+                            'placeholder' in code.lower() or
+                            'todo' in code.lower() or
+                            'later' in code.lower() or
+                            'scratch' in code.lower() or
+                            'experiment' in code.lower()
+                        )
+                        
+                        if is_placeholder:
+                            logger.warning(f"O3 wrote placeholder code: {code[:100]}...")
+                            # Count how many times O3 has written placeholders
+                            placeholder_count = getattr(self, '_o3_placeholder_count', 0) + 1
+                            self._o3_placeholder_count = placeholder_count
                             
-                            if is_placeholder:
-                                logger.warning(f"O3 wrote placeholder code: {code[:100]}...")
-                                # Count how many times O3 has written placeholders
-                                placeholder_count = getattr(self, '_o3_placeholder_count', 0) + 1
-                                self._o3_placeholder_count = placeholder_count
-                                
-                                if placeholder_count >= 3:
-                                    logger.info("O3 has written multiple placeholders, prompting for actual solution")
-                                    # For next iteration, we'll send a direct message
-                                    # The Responses API will handle this with previous_response_id
-                                    self._next_user_message = "I see you're exploring the problem. Please now write the complete, working solution code based on your analysis. The solution should handle all the input/output requirements described in the problem."
-                                    self._o3_placeholder_count = 0  # Reset counter
+                            if placeholder_count >= 3:
+                                logger.info("O3 has written multiple placeholders, prompting for actual solution")
+                                # For next iteration, we'll send a direct message
+                                # The Responses API will handle this with previous_response_id
+                                self._next_user_message = "I see you're exploring the problem. Please now write the complete, working solution code based on your analysis. The solution should handle all the input/output requirements described in the problem."
+                                self._o3_placeholder_count = 0  # Reset counter
                 
                 # Check if solution exists and tests pass - if so, we're done
                 solution_path = self.workspace_path / "solution.py"
