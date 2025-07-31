@@ -46,7 +46,7 @@ class WorkspaceManager:
         self.active_workspaces = {}
         logger.info(f"Workspace manager initialized with base dir: {self.base_dir}")
     
-    def create_workspace(self, problem_id: str, agent_name: str) -> Optional[Path]:
+    def create_workspace(self, problem_id: str, agent_name: str, holdout_config: dict = None) -> Optional[Path]:
         """
         Create a new workspace for a problem.
         
@@ -69,7 +69,8 @@ class WorkspaceManager:
                 problem_id=problem_id,
                 output_dir=str(workspace_path.absolute()),
                 release_version="release_v6",  # Use v6 to get latest problems
-                verbose=True
+                verbose=True,
+                holdout_config=holdout_config
             )
             
             if result is None:

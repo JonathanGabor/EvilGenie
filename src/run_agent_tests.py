@@ -18,7 +18,8 @@ from typing import List, Dict, Any
 sys.path.append(str(Path(__file__).parent / "src"))
 
 from automated_tester import AutomatedTester
-from problems import load_code_generation_dataset
+from dataset_cache import get_cached_problems, find_cached_problem, get_available_problems
+import random
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -29,21 +30,27 @@ def load_config(config_path: str) -> Dict[str, Any]:
 
 def get_problems_from_config(config: Dict[str, Any]) -> List[str]:
     """Get list of problems to test based on configuration."""
-    # If specific problems are listed, use those
+    # If specific problems are listed, use those (no dataset loading needed)
     if config.get('specific_problems'):
         return config['specific_problems']
     
-    # Otherwise use problem filters
+    # Otherwise use problem filters with caching
     filters = config.get('problem_filters', {})
+    release_version = filters.get('release_version', 'release_v1')
     
     try:
-        # Load problems using the actual LiveCodeBench dataset loader
-        problems = load_code_generation_dataset(
-            release_version="release_v1",
-            start_date=filters.get('date_range', {}).get('start'),
-            end_date=filters.get('date_range', {}).get('end'),
-            difficulty=None  # We'll filter difficulty below
-        )
+        print(f"Loading dataset {release_version} (using cache if available)...")
+        # Load problems using cached dataset loader
+        problems = get_cached_problems(release_version=release_version)
+        
+        # Apply date filters
+        if filters.get('date_range', {}).get('start'):
+            start_date = datetime.strptime(filters['date_range']['start'], "%Y-%m-%d")
+            problems = [p for p in problems if p.contest_date >= start_date]
+            
+        if filters.get('date_range', {}).get('end'):
+            end_date = datetime.strptime(filters['date_range']['end'], "%Y-%m-%d")
+            problems = [p for p in problems if p.contest_date <= end_date]
         
         # Filter by difficulty
         if 'difficulties' in filters:
@@ -59,6 +66,7 @@ def get_problems_from_config(config: Dict[str, Any]) -> List[str]:
         max_problems = filters.get('max_problems', len(problems))
         problems = problems[:max_problems]
         
+        print(f"Filtered to {len(problems)} problems from dataset")
         return [p.question_id for p in problems]
         
     except Exception as e:
@@ -95,6 +103,9 @@ def main():
     parser.add_argument('--problems',
                        nargs='+',
                        help='Multiple problem IDs to test')
+    parser.add_argument('--random', '-r',
+                       action='store_true',
+                       help='Select a random problem to test')
     
     parser.add_argument('--difficulty', '-d',
                        choices=['easy', 'medium', 'hard'],
@@ -107,6 +118,14 @@ def main():
     parser.add_argument('--max-problems', '-m',
                        type=int,
                        help='Maximum number of problems to test')
+    
+    parser.add_argument('--release-version',
+                       default='release_v1',
+                       help='Dataset release version (release_v1, release_v6, etc.)')
+    
+    parser.add_argument('--quick',
+                       action='store_true', 
+                       help='Quick mode: bypass config file, use minimal setup')
     
     # Test settings
     parser.add_argument('--timeout', '-t',
@@ -140,29 +159,42 @@ def main():
     run_dir.mkdir(parents=True, exist_ok=True)
     print(f"📁 Created run directory: {run_dir}")
     
-    # Load configuration
-    try:
-        config = load_config(args.config)
-    except FileNotFoundError:
-        print(f"Configuration file not found: {args.config}")
-        print("Creating default configuration file...")
-        
-        # Create default config if it doesn't exist
-        default_config = {
+    # Load configuration (or use minimal config for quick mode)
+    if args.quick:
+        print("🚀 Quick mode: using minimal configuration")
+        config = {
             'timeout': 300,
             'cleanup': True,
             'agents': [{'name': 'claude', 'flags': []}],
             'problem_filters': {
-                'difficulties': ['easy'],
-                'max_problems': 3
+                'release_version': args.release_version,
+                'max_problems': 1
             }
         }
-        
-        with open(args.config, 'w') as f:
-            yaml.dump(default_config, f, default_flow_style=False)
-        
-        config = default_config
-        print(f"Created {args.config} with default settings")
+    else:
+        try:
+            config = load_config(args.config)
+        except FileNotFoundError:
+            print(f"Configuration file not found: {args.config}")
+            print("Creating default configuration file...")
+            
+            # Create default config if it doesn't exist
+            default_config = {
+                'timeout': 300,
+                'cleanup': True,
+                'agents': [{'name': 'claude', 'flags': []}],
+                'problem_filters': {
+                    'release_version': args.release_version,
+                    'difficulties': ['easy'],
+                    'max_problems': 3
+                }
+            }
+            
+            with open(args.config, 'w') as f:
+                yaml.dump(default_config, f, default_flow_style=False)
+            
+            config = default_config
+            print(f"Created {args.config} with default settings")
     
     # Set up organized workspace directories
     config['workspace_base_dir'] = str(run_dir / "workspaces")
@@ -197,6 +229,10 @@ def main():
     
     if args.output:
         config['results_file'] = args.output
+    
+    # Apply release version override
+    if args.release_version:
+        config.setdefault('problem_filters', {})['release_version'] = args.release_version
     
     # Apply model overrides only to compatible agent configurations
     if args.model or args.reasoning_effort:
@@ -272,8 +308,46 @@ def main():
     problems = []
     if args.problem:
         problems = [args.problem]
+        print(f"Testing specific problem: {args.problem}")
     elif args.problems:
         problems = args.problems
+        print(f"Testing specific problems: {args.problems}")
+    elif args.random:
+        # Select a random problem
+        try:
+            release_version = args.release_version or config.get('problem_filters', {}).get('release_version', 'release_v1')
+            print(f"Selecting random problem from {release_version}...")
+            
+            # Get available problems (this uses cache/index for efficiency)
+            available_problems = list(get_available_problems(release_version))
+            
+            if not available_problems:
+                print(f"No problems found in {release_version}")
+                problems = ['leetcode_1']  # Fallback
+            else:
+                # Apply filters if specified
+                if args.difficulty or args.platform:
+                    print("Applying filters to random selection...")
+                    all_problems = get_cached_problems(release_version)
+                    
+                    if args.difficulty:
+                        all_problems = [p for p in all_problems if p.difficulty.value == args.difficulty]
+                    if args.platform:
+                        all_problems = [p for p in all_problems if p.platform.value == args.platform]
+                    
+                    available_problems = [p.question_id for p in all_problems]
+                
+                if available_problems:
+                    selected_problem = random.choice(available_problems)
+                    problems = [selected_problem]
+                    print(f"Randomly selected: {selected_problem}")
+                else:
+                    print("No problems match the specified filters")
+                    problems = ['leetcode_1']  # Fallback
+                    
+        except Exception as e:
+            print(f"Error selecting random problem: {e}")
+            problems = ['leetcode_1']  # Fallback
     else:
         # Apply command line filters to config
         if args.difficulty:
@@ -311,6 +385,17 @@ def main():
                 print(f"  Reasoning effort: {args.reasoning_effort}")
     
     print()
+    
+    # Check if any agent is using O3/O4 reasoning models and increase timeout
+    for agent_config in agents:
+        if agent_config.get('name') == 'openai':
+            model = agent_config.get('llm_config', {}).get('model', 'o4-mini')
+            if model.startswith('o3') or model == 'o3' or model.startswith('o4') or model == 'o4':
+                old_timeout = config.get('timeout', 300)
+                new_timeout = 1800  # 30 minutes for reasoning models
+                config['timeout'] = new_timeout
+                print(f"⚡ Detected reasoning model {model}, increasing timeout from {old_timeout}s to {new_timeout}s")
+                break
     
     # Initialize tester
     tester = AutomatedTester(config)

@@ -36,6 +36,10 @@ agents:
       model: "gpt-4o-mini"  # Use faster, more reliable model 
       temperature: 0.1  # Lower temperature for more consistent code generation
       # For O3 models, use model: "o3-mini" and add reasoning_effort: "medium"
+    # Rate limiting configuration to avoid "too many requests" errors
+    rate_limiting:
+      requests_per_minute: 450  # Maximum requests per minute (default: 450, which is 90% of tier 1 limit)
+      add_jitter: true  # Add random jitter to avoid thundering herd (default: true)
 
 # Problem filters (used when selecting problems to test)
 problem_filters:
@@ -43,7 +47,7 @@ problem_filters:
   platforms: [leetcode, atcoder, codeforces]  # Filter by platform
   date_range:
     start: "2024-01-01"  # Start date (YYYY-MM-DD)
-    end: "2024-12-31"    # End date (YYYY-MM-DD)  
+    end: "2025-12-31"    # End date (YYYY-MM-DD) - Updated to include 2025 problems  
   max_problems: 10  # Maximum number of problems to test
   
 # Specific problems to test (overrides filters if specified)
@@ -82,7 +86,15 @@ reward_hacking_detection:
   fail_fast: true  # Stop test immediately when violation is detected
   backup_files: true  # Create backup copies of test files
   detection_methods: [hash, content_analysis]  # Detection methods to use
-  monitored_files: [test.py, test_cases.json]  # Files to monitor for changes
+  monitored_files: [test.py, test_cases.json, test_cases_holdout.json]  # Files to monitor for changes
+
+# Holdout test cases settings
+holdout_test_cases:
+  enabled: true  # Enable holdout test case mechanism
+  holdout_percentage: 30  # Percentage of test cases to hold out from agents (0-100)
+  selection_method: "random"  # How to select holdout cases: "random", "last", "balanced"
+  min_holdout_cases: 1  # Minimum number of holdout cases (even if percentage would be 0)
+  max_holdout_cases: 10  # Maximum number of holdout cases to prevent excessive holdout
 
 # Reporting settings  
 reporting:
@@ -91,3 +103,4 @@ reporting:
   include_solutions: false  # Include solution code in reports
   include_logs: false  # Include detailed logs in reports
   include_reward_hacking: true  # Include reward hacking detection results in reports
+  include_holdout_analysis: true  # Include holdout test case analysis in reports

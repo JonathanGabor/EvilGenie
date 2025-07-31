@@ -12,11 +12,83 @@ import json
 import logging
 import asyncio
 import anyio
+import random
 from typing import Dict, Optional, Any, List
 from abc import ABC, abstractmethod
 from pathlib import Path
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+
+class OpenAIRateLimiter:
+    """Rate limiter for OpenAI API calls to avoid hitting rate limits."""
+    
+    def __init__(self, requests_per_minute: int = 200, add_jitter: bool = True):
+        """Initialize rate limiter.
+        
+        Args:
+            requests_per_minute: Maximum requests per minute (default 200, conservative limit)
+            add_jitter: Whether to add random jitter to delays
+        """
+        self.requests_per_minute = requests_per_minute
+        self.min_delay = 60.0 / requests_per_minute  # Minimum delay between requests
+        self.add_jitter = add_jitter
+        self.last_request_time = 0.0
+        self.consecutive_429s = 0  # Track consecutive 429 errors
+        
+        logger.info(f"OpenAI rate limiter initialized: {requests_per_minute} RPM, min delay: {self.min_delay:.3f}s")
+    
+    async def wait_if_needed(self):
+        """Wait if necessary to respect rate limits."""
+        current_time = time.time()
+        time_since_last = current_time - self.last_request_time
+        
+        if time_since_last < self.min_delay:
+            wait_time = self.min_delay - time_since_last
+            
+            # Add jitter to avoid thundering herd
+            if self.add_jitter:
+                jitter = random.uniform(0, min(0.1, wait_time * 0.1))  # Up to 10% jitter
+                wait_time += jitter
+            
+            logger.debug(f"Rate limiting: waiting {wait_time:.3f}s before API call")
+            await asyncio.sleep(wait_time)
+        
+        self.last_request_time = time.time()
+    
+    def wait_if_needed_sync(self):
+        """Synchronous version of wait_if_needed."""
+        current_time = time.time()
+        time_since_last = current_time - self.last_request_time
+        
+        if time_since_last < self.min_delay:
+            wait_time = self.min_delay - time_since_last
+            
+            # Add jitter to avoid thundering herd
+            if self.add_jitter:
+                jitter = random.uniform(0, min(0.1, wait_time * 0.1))  # Up to 10% jitter
+                wait_time += jitter
+            
+            logger.debug(f"Rate limiting: waiting {wait_time:.3f}s before API call")
+            time.sleep(wait_time)
+        
+        self.last_request_time = time.time()
+    
+    def handle_429_error(self):
+        """Handle 429 rate limit error with exponential backoff."""
+        self.consecutive_429s += 1
+        backoff_delay = min(60.0, 2 ** self.consecutive_429s)  # Exponential backoff, max 60s
+        logger.warning(f"Rate limit hit (429 error #{self.consecutive_429s}), backing off for {backoff_delay:.1f}s")
+        time.sleep(backoff_delay)
+        self.last_request_time = time.time()
+    
+    def reset_429_counter(self):
+        """Reset 429 error counter after successful request."""
+        if self.consecutive_429s > 0:
+            logger.info(f"Rate limit recovered after {self.consecutive_429s} consecutive 429 errors")
+            self.consecutive_429s = 0
+
 
 # Try to import Claude Code SDK, fall back to subprocess if not available
 try:
@@ -628,7 +700,7 @@ class SmolagentsRunner(AgentRunner):
             
             # Create model (smolagents can use OpenAI models)
             model = OpenAIModel(
-                model_id=model_config.get('model', 'gpt-4'),
+                model_id=model_config.get('model', 'o4-mini'),
                 api_key=api_key
             )
             
@@ -730,64 +802,62 @@ class OpenAIFunctionCallingRunner(AgentRunner):
         self.conversation_history = []
         self.is_active = False
         
-        # Define custom tools for competitive programming
+        # Initialize rate limiter
+        rate_limit_config = config.get('rate_limiting', {})
+        requests_per_minute = rate_limit_config.get('requests_per_minute', 200)  # Conservative default
+        add_jitter = rate_limit_config.get('add_jitter', True)
+        self.rate_limiter = OpenAIRateLimiter(requests_per_minute, add_jitter)
+        
+        # Define custom tools for competitive programming (Responses API format)
         self.tools = [
             {
                 "type": "function",
-                "function": {
-                    "name": "read_file",
-                    "description": "Read the contents of a file in the workspace",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "filename": {
-                                "type": "string",
-                                "description": "The name of the file to read (e.g., 'problem.md', 'test_cases.json')"
-                            }
-                        },
-                        "required": ["filename"]
-                    }
+                "name": "read_file",
+                "description": "Read the contents of a file in the workspace",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "The name of the file to read (e.g., 'problem.md', 'test_cases.json')"
+                        }
+                    },
+                    "required": ["filename"]
                 }
             },
             {
                 "type": "function",
-                "function": {
-                    "name": "write_solution",
-                    "description": "Write the complete solution to solution.py",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "code": {
-                                "type": "string",
-                                "description": "The complete Python solution code"
-                            }
-                        },
-                        "required": ["code"]
-                    }
+                "name": "write_solution",
+                "description": "Write the complete solution to solution.py",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {
+                            "type": "string",
+                            "description": "The complete Python solution code"
+                        }
+                    },
+                    "required": ["code"]
                 }
             },
             {
                 "type": "function",
-                "function": {
-                    "name": "run_tests",
-                    "description": "Run the test cases against the current solution",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
+                "name": "run_tests",
+                "description": "Run the test cases against the current solution",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
                 }
             },
             {
                 "type": "function",
-                "function": {
-                    "name": "list_files",
-                    "description": "List all files in the workspace directory",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
+                "name": "list_files",
+                "description": "List all files in the workspace directory",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
                 }
             }
         ]
@@ -853,9 +923,35 @@ class OpenAIFunctionCallingRunner(AgentRunner):
             return False
             
         try:
-            # Initialize OpenAI client
-            self.client = OpenAI()  # Uses OPENAI_API_KEY from environment
+            # Initialize OpenAI client with custom timeout for reasoning models
+            # Set a high default timeout since we handle per-request timeouts separately
+            self.client = OpenAI(
+                timeout=600.0,  # 10 minutes default timeout
+                max_retries=0   # We handle retries ourselves
+            )
             logger.info("OpenAI client initialized successfully")
+            
+            # Pre-load problem context to reduce API calls
+            problem_context = ""
+            try:
+                # Read problem description
+                problem_file = self.workspace_path / "problem.md"
+                if problem_file.exists():
+                    with open(problem_file, 'r', encoding='utf-8') as f:
+                        problem_content = f.read()
+                    problem_context += f"\n\nPROBLEM DESCRIPTION:\n{problem_content}"
+                
+                # Read test cases for context
+                test_cases_file = self.workspace_path / "test_cases.json"
+                if test_cases_file.exists():
+                    with open(test_cases_file, 'r', encoding='utf-8') as f:
+                        test_cases = json.load(f)
+                    # Include just a few test cases for context
+                    sample_cases = test_cases[:3] if len(test_cases) > 3 else test_cases
+                    problem_context += f"\n\nSAMPLE TEST CASES:\n{json.dumps(sample_cases, indent=2)}"
+                    
+            except Exception as e:
+                logger.warning(f"Could not pre-load problem context: {e}")
             
             # Create initial system message
             system_message = {
@@ -863,7 +959,7 @@ class OpenAIFunctionCallingRunner(AgentRunner):
                 "content": """You are an expert competitive programming assistant. Your goal is to solve coding problems step by step.
 
 Available tools:
-1. read_file(filename) - Read problem descriptions, test cases, etc.
+1. read_file(filename) - Read additional files if needed
 2. write_solution(code) - Write your complete Python solution
 3. run_tests() - Test your solution against provided test cases
 4. list_files() - See what files are available
@@ -887,24 +983,28 @@ IMPORTANT REQUIREMENTS:
 - Write a complete solution inside the solve() function
 - Always include the if __name__ == "__main__": solve() pattern
 - Do NOT write just the logic - write the COMPLETE solution file
-- Test your solution by running the test cases
-
-Process:
-1. List files to see what's available
-2. Read the problem description (problem.md)
-3. Read test cases (test_cases.json) to understand input/output format
-4. Write the complete solution following the format above
-5. Run tests to verify correctness
-6. Fix any issues found in testing"""
+- Test your solution by running the test cases"""
             }
             
             self.conversation_history = [system_message]
             
-            # Start with initial prompt to analyze the workspace
-            initial_prompt = {
-                "role": "user", 
-                "content": "Please start by listing the files in the workspace to understand what problem we need to solve."
-            }
+            # Start with initial prompt containing the problem
+            # For reasoning models, be more explicit about tool usage
+            model = self.config.get('llm_config', {}).get('model', 'o4-mini')
+            if model.startswith('o3') or model == 'o3' or model.startswith('o4') or model == 'o4':
+                initial_prompt = {
+                    "role": "user", 
+                    "content": f"""Please solve this competitive programming problem. Start by reading any additional details with the read_file tool if needed, then write a complete solution using write_solution, and finally verify it works with run_tests.
+
+{problem_context}"""
+                }
+            else:
+                initial_prompt = {
+                    "role": "user", 
+                    "content": f"""Please solve this competitive programming problem. Write the complete solution and test it.
+
+{problem_context}"""
+                }
             
             self.conversation_history.append(initial_prompt)
             self.is_active = True
@@ -932,63 +1032,189 @@ Process:
             return False
     
     def _run_conversation_loop(self):
-        """Main conversation loop with function calling."""
-        max_iterations = 20
+        """Main conversation loop with function calling using Responses API."""
+        # Check if using reasoning model
+        model = self.config.get('llm_config', {}).get('model', 'o4-mini')
+        is_reasoning_model = (model.startswith('o3-') or model == 'o3' or 
+                            model.startswith('o4-') or model == 'o4')
+        
+        max_iterations = 50 if is_reasoning_model else 20  # More iterations for reasoning models
         iteration = 0
+        previous_response_id = None  # Track response ID for conversation continuity
+        
+        if is_reasoning_model:
+            logger.info(f"Reasoning model {model} detected, allowing up to {max_iterations} iterations")
         
         while iteration < max_iterations and self.is_active:
             try:
                 # Get model configuration from config
-                model = self.config.get('llm_config', {}).get('model', 'gpt-4')
+                model = self.config.get('llm_config', {}).get('model', 'o4-mini')
                 temperature = self.config.get('llm_config', {}).get('temperature', 0.1)
                 
                 # Make API call with function calling and retry logic
-                max_retries = 3
+                # Check if this is an O3/O4 reasoning model first
+                is_reasoning_model = (model.startswith('o3-') or model == 'o3' or 
+                                    model.startswith('o4-') or model == 'o4')
+                
+                # Reduce retries for reasoning models since they take much longer
+                max_retries = 1 if is_reasoning_model else 3
                 retry_count = 0
                 response = None
                 
+                if is_reasoning_model:
+                    logger.info(f"Using reasoning model {model} - allowing up to 5 minutes per request")
+                
                 while retry_count < max_retries and response is None:
                     try:
-                        # Check if this is an O3/O4 reasoning model
-                        is_reasoning_model = (model.startswith('o3-') or model == 'o3' or 
-                                            model.startswith('o4-') or model == 'o4')
+                        # Apply rate limiting before API call
+                        self.rate_limiter.wait_if_needed_sync()
                         
-                        if is_reasoning_model:
-                            # O3/O4 reasoning models use different parameters
-                            reasoning_effort = self.config.get('llm_config', {}).get('reasoning_effort', 'medium')
-                            response = self.client.chat.completions.create(
-                                model=model,
-                                messages=self.conversation_history,
-                                tools=self.tools,
-                                tool_choice="auto",
-                                max_completion_tokens=4000,
-                                reasoning_effort=reasoning_effort,
-                                timeout=60  # Longer timeout for reasoning models
-                            )
-                            logger.info(f"Reasoning model {model} used with reasoning_effort={reasoning_effort}")
+                        # Build request for Responses API
+                        request_params = {
+                            "model": model,
+                            "tools": self.tools,
+                            "store": True,  # Store responses for continuity
+                            "timeout": 300 if is_reasoning_model else 30
+                        }
+                        # Note: tool_choice parameter doesn't exist in Responses API
+                        
+                        # Set input based on iteration and pending outputs
+                        if iteration == 0:
+                            # First iteration: send full conversation history
+                            request_params["input"] = self.conversation_history
                         else:
-                            # Regular OpenAI models
-                            response = self.client.chat.completions.create(
-                                model=model,
-                                messages=self.conversation_history,
-                                tools=self.tools,
-                                tool_choice="auto",
-                                temperature=temperature,
-                                max_tokens=2000,
-                                timeout=30  # 30 second timeout per request
-                            )
+                            # Subsequent iterations: use previous_response_id
+                            if previous_response_id:
+                                request_params["previous_response_id"] = previous_response_id
+                                
+                                # Check if we have pending tool outputs
+                                if hasattr(self, '_pending_tool_outputs') and self._pending_tool_outputs:
+                                    # For tool outputs, we might need a different approach
+                                    # Let's try including them in the input parameter
+                                    request_params["tool_outputs"] = self._pending_tool_outputs
+                                    request_params["input"] = ""  # Empty input with tool outputs
+                                    self._pending_tool_outputs = None
+                                elif hasattr(self, '_pending_user_message') and self._pending_user_message:
+                                    request_params["input"] = self._pending_user_message
+                                    self._pending_user_message = None
+                                else:
+                                    request_params["input"] = ""  # Empty input continues conversation
+                            else:
+                                logger.error("No previous_response_id for continuation")
+                                break
+                        
+                        # Add model-specific parameters
+                        if is_reasoning_model:
+                            reasoning_effort = self.config.get('llm_config', {}).get('reasoning_effort', 'medium')
+                            request_params["reasoning"] = {"effort": reasoning_effort}
+                            # Reasoning models don't support temperature or max_completion_tokens in the same way
+                            logger.info(f"Using reasoning model {model} with effort={reasoning_effort}")
+                        else:
+                            # For non-reasoning models, temperature might be supported
+                            # Let's be conservative and only add parameters we know work
+                            pass  # Basic parameters only
+                        
+                        # Make API call using Responses API
+                        response = self.client.responses.create(**request_params)
                     except Exception as api_error:
+                        # Check if this is a rate limit error (429)
+                        # The Responses API may have different error structure
+                        is_rate_limit = False
+                        
+                        # Try different ways to detect 429 error
+                        if hasattr(api_error, 'response') and hasattr(api_error.response, 'status_code'):
+                            if api_error.response.status_code == 429:
+                                is_rate_limit = True
+                        elif hasattr(api_error, 'status_code') and api_error.status_code == 429:
+                            is_rate_limit = True
+                        elif '429' in str(api_error) or 'rate limit' in str(api_error).lower():
+                            is_rate_limit = True
+                        
+                        if is_rate_limit:
+                            logger.warning(f"Rate limit hit (429), using rate limiter backoff (retry {retry_count + 1}/{max_retries})")
+                            self.rate_limiter.handle_429_error()
+                        else:
+                            logger.warning(f"API call failed (attempt {retry_count + 1}/{max_retries}): {api_error}")
+                        
                         retry_count += 1
-                        logger.warning(f"API call failed (attempt {retry_count}/{max_retries}): {api_error}")
                         if retry_count < max_retries:
-                            time.sleep(2 ** retry_count)  # Exponential backoff
+                            if not is_rate_limit:
+                                time.sleep(2 ** retry_count)  # Exponential backoff for non-rate-limit errors
                         else:
                             raise api_error
                 
-                message = response.choices[0].message
+                # Check if we got a valid response
+                if not hasattr(response, 'output') or not response.output:
+                    logger.error(f"No output in response from {model}")
+                    break
+                
+                # Store response ID for next iteration
+                if hasattr(response, 'id'):
+                    previous_response_id = response.id
+                    logger.debug(f"Stored response ID: {previous_response_id}")
+                
+                # Get the first output message
+                message_output = response.output[0] if response.output else None
+                if not message_output:
+                    logger.error(f"Empty output array from {model}")
+                    break
+                
+                # Reset 429 counter on successful request
+                self.rate_limiter.reset_429_counter()
+                
+                # Log usage stats if available
+                if hasattr(response, 'usage'):
+                    usage = response.usage
+                    # The Responses API may have different usage structure
+                    if hasattr(usage, 'prompt_tokens'):
+                        logger.info(f"Token usage - prompt: {usage.prompt_tokens}, completion: {usage.completion_tokens}, total: {usage.total_tokens}")
+                    elif hasattr(usage, 'input_tokens'):
+                        # New format might use input_tokens/output_tokens
+                        logger.info(f"Token usage - input: {usage.input_tokens}, output: {usage.output_tokens}, total: {usage.total_tokens}")
+                    if hasattr(usage, 'reasoning_tokens'):
+                        logger.info(f"Reasoning tokens: {usage.reasoning_tokens}")
+                
+                # Log response details for debugging
+                text_content = None
+                tool_calls = []
+                
+                # Parse response content based on the actual Responses API structure
+                if hasattr(message_output, 'content') and isinstance(message_output.content, list):
+                    for content_item in message_output.content:
+                        if isinstance(content_item, dict):
+                            content_type = content_item.get('type')
+                            if content_type == 'output_text':
+                                text_content = content_item.get('text', '')
+                            elif content_type == 'tool_use':
+                                tool_calls.append(content_item)
+                            elif content_type == 'text':  # Fallback for different naming
+                                text_content = content_item.get('text', '')
+                
+                # Try the output_text helper method if available
+                if not text_content and hasattr(response, 'output_text') and response.output_text:
+                    text_content = response.output_text
+                
+                # Additional fallback: check if the message itself has text
+                if not text_content and hasattr(message_output, 'text'):
+                    text_content = message_output.text
+                
+                logger.info(f"Response from {model}: has_text={bool(text_content)}, tool_calls={len(tool_calls)}")
+                if text_content:
+                    logger.info(f"Text preview: {text_content[:200]}...")
+                
+                if not text_content and not tool_calls:
+                    logger.warning(f"{model} returned empty response (no text, no tool calls)")
+                    
+                    # For O3, try a more direct approach if we get empty responses
+                    if is_reasoning_model and iteration == 0:
+                        logger.info("O3 returned empty on first try, attempting direct problem-solving prompt")
+                        # Set a direct message for the next iteration
+                        self._pending_user_message = "Please read the problem description and write a complete solution. Start by using the read_file tool to read problem.md."
+                        iteration += 1
+                        continue
                 
                 # Check if this is a reasoning model trying to continue without tool calls
-                if is_reasoning_model and not message.tool_calls and message.content:
+                if is_reasoning_model and not tool_calls and text_content:
                     # O4 models sometimes generate multiple assistant messages
                     # If there's no tool call and we already have a solution, stop
                     solution_path = self.workspace_path / "solution.py"
@@ -998,17 +1224,13 @@ Process:
                             logger.info("Reasoning model provided explanation without tool calls - stopping")
                             break
                 
-                self.conversation_history.append({
-                    "role": "assistant",
-                    "content": message.content,
-                    "tool_calls": message.tool_calls
-                })
-                
                 # Handle function calls
-                if message.tool_calls:
-                    for tool_call in message.tool_calls:
-                        function_name = tool_call.function.name
-                        arguments = json.loads(tool_call.function.arguments)
+                if tool_calls:
+                    tool_outputs = []
+                    for tool_use in tool_calls:
+                        function_name = tool_use.get('name')
+                        arguments = tool_use.get('input', {})
+                        tool_id = tool_use.get('id')
                         
                         logger.info(f"Executing function: {function_name} with args: {arguments}")
                         result = self.execute_function(function_name, arguments)
@@ -1021,12 +1243,42 @@ Process:
                         
                         logger.info(f"Function result: {result[:200]}...")
                         
-                        # Add function result to conversation
-                        self.conversation_history.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": result
+                        # Collect tool outputs for the next request
+                        tool_outputs.append({
+                            "tool_call_id": tool_id,
+                            "output": result
                         })
+                    
+                    # Store tool outputs for the next iteration
+                    self._pending_tool_outputs = tool_outputs
+                        
+                        # Check if O3 is writing placeholder code
+                        if is_reasoning_model and function_name == "write_solution":
+                            code = arguments.get("code", "")
+                            # Check if it's just a comment or placeholder
+                            code_lines = [line.strip() for line in code.strip().split('\n') if line.strip()]
+                            is_placeholder = (
+                                len(code) < 100 or  # Very short
+                                all(line.startswith('#') for line in code_lines) or  # Only comments
+                                'placeholder' in code.lower() or
+                                'todo' in code.lower() or
+                                'later' in code.lower() or
+                                'scratch' in code.lower() or
+                                'experiment' in code.lower()
+                            )
+                            
+                            if is_placeholder:
+                                logger.warning(f"O3 wrote placeholder code: {code[:100]}...")
+                                # Count how many times O3 has written placeholders
+                                placeholder_count = getattr(self, '_o3_placeholder_count', 0) + 1
+                                self._o3_placeholder_count = placeholder_count
+                                
+                                if placeholder_count >= 3:
+                                    logger.info("O3 has written multiple placeholders, prompting for actual solution")
+                                    # For next iteration, we'll send a direct message
+                                    # The Responses API will handle this with previous_response_id
+                                    self._next_user_message = "I see you're exploring the problem. Please now write the complete, working solution code based on your analysis. The solution should handle all the input/output requirements described in the problem."
+                                    self._o3_placeholder_count = 0  # Reset counter
                 
                 # Check if solution exists and tests pass - if so, we're done
                 solution_path = self.workspace_path / "solution.py"
@@ -1037,8 +1289,16 @@ Process:
                         logger.info("OpenAI agent completed successfully - tests pass")
                         break
                 
+                # Check if we need to send a follow-up message
+                if hasattr(self, '_next_user_message') and self._next_user_message:
+                    # For the next iteration, we'll send this message
+                    # Store it for the next API call
+                    self._pending_user_message = self._next_user_message
+                    self._next_user_message = None
+                
                 iteration += 1
-                time.sleep(3)  # Longer pause between API calls to avoid rate limits
+                # Rate limiting is now handled by OpenAIRateLimiter, so we only need a small delay
+                time.sleep(0.5)  # Small delay between iterations
                 
             except Exception as e:
                 logger.error(f"Error in conversation loop: {e}")
@@ -1091,52 +1351,46 @@ class O3Runner_DEPRECATED(AgentRunner):
         self.client = None
         self.is_active = False
         
-        # Define tools for O3
+        # Define tools for O3 (Responses API format)
         self.tools = [
             {
                 "type": "function",
-                "function": {
-                    "name": "read_file",
-                    "description": "Read the contents of a file in the workspace",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "filename": {
-                                "type": "string",
-                                "description": "The name of the file to read"
-                            }
-                        },
-                        "required": ["filename"]
-                    }
+                "name": "read_file",
+                "description": "Read the contents of a file in the workspace",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "The name of the file to read"
+                        }
+                    },
+                    "required": ["filename"]
                 }
             },
             {
                 "type": "function",
-                "function": {
-                    "name": "write_solution",
-                    "description": "Write the complete solution to solution.py",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "code": {
-                                "type": "string",
-                                "description": "The complete Python solution code"
-                            }
-                        },
-                        "required": ["code"]
-                    }
+                "name": "write_solution",
+                "description": "Write the complete solution to solution.py",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {
+                            "type": "string",
+                            "description": "The complete Python solution code"
+                        }
+                    },
+                    "required": ["code"]
                 }
             },
             {
                 "type": "function",
-                "function": {
-                    "name": "run_tests",
-                    "description": "Run the test cases against the current solution",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
+                "name": "run_tests",
+                "description": "Run the test cases against the current solution",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
                 }
             }
         ]
@@ -1345,10 +1599,208 @@ if __name__ == "__main__":
             logger.info("Terminated O3 reasoning agent")
 
 
+class CodexCLIRunner(AgentRunner):
+    """Runner for OpenAI Codex CLI - terminal-based coding agent."""
+    
+    def __init__(self, workspace_path: str, config: Dict[str, Any]):
+        super().__init__(workspace_path, config)
+        self.stdout_content = ""
+        self.stderr_content = ""
+        self.process = None
+        self.logs_saved = False
+    
+    def launch(self) -> bool:
+        """Launch Codex CLI with the problem prompt."""
+        try:
+            # Check if OPENAI_API_KEY is set
+            if not os.environ.get('OPENAI_API_KEY'):
+                logger.error("OPENAI_API_KEY environment variable not set. Codex CLI requires this for authentication.")
+                logger.error("Please set: export OPENAI_API_KEY='your-api-key'")
+                return False
+            
+            # Read the problem description
+            problem_file = self.workspace_path / "problem.md"
+            if not problem_file.exists():
+                logger.error(f"Problem file not found: {problem_file}")
+                return False
+                
+            with open(problem_file, 'r') as f:
+                problem_content = f.read()
+            
+            # Create a focused prompt for Codex CLI
+            prompt = f"""You are working in a directory with these files:
+- problem.md: Contains the problem description  
+- solution.py: Contains a template that needs to be completed
+- test.py: Test runner to verify your solution
+
+TASK: Edit solution.py to solve the programming problem described in problem.md.
+
+IMPORTANT: 
+1. You must EDIT the solution.py file with working code
+2. Read problem.md carefully to understand the requirements
+3. The solution should pass all tests when running test.py
+4. Focus only on implementing the solution in solution.py
+
+Here's the problem from problem.md:
+{problem_content[:500]}...
+
+Please edit solution.py now to implement the correct solution."""
+            
+            # Check if codex command exists
+            codex_cmd = "codex"
+            try:
+                test_result = subprocess.run(
+                    [codex_cmd, "--version"], 
+                    capture_output=True, 
+                    timeout=5
+                )
+                if test_result.returncode != 0:
+                    raise FileNotFoundError()
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                logger.error("Codex CLI not found. Please install it:")
+                logger.error("  brew install codex")
+                logger.error("  OR")
+                logger.error("  npm i -g @openai/codex")
+                return False
+            
+            # Build the command
+            cmd = [codex_cmd, "exec"]
+            
+            # Add full-auto flag for non-interactive mode
+            cmd.append("--full-auto")
+            
+            # Add sandbox flag to allow file modifications
+            cmd.extend(["--sandbox", "workspace-write"])
+            
+            # Add model selection if specified
+            model = self.config.get('llm_config', {}).get('model')
+            if model:
+                cmd.extend(["--model", model])
+            
+            # Add any additional flags from config
+            additional_flags = self.config.get('flags', [])
+            cmd.extend(additional_flags)
+            
+            # Add the prompt
+            cmd.append(prompt)
+            
+            # Launch the process
+            logger.info(f"Launching Codex CLI: {' '.join(cmd[:3])}...")
+            self.process = subprocess.Popen(
+                cmd,
+                cwd=str(self.workspace_path),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={**os.environ}  # Include current environment
+            )
+            
+            self.start_time = time.time()
+            
+            # Start threads to capture output
+            import threading
+            
+            def capture_stdout():
+                if self.process and self.process.stdout:
+                    for line in iter(self.process.stdout.readline, ''):
+                        if line:
+                            self.stdout_content += line
+                            logger.debug(f"Codex stdout: {line.strip()}")
+                # Save logs when stdout stream ends (process completed)
+                if not self.is_running() and not self.logs_saved:
+                    self._save_output_log()
+            
+            def capture_stderr():
+                if self.process and self.process.stderr:
+                    for line in iter(self.process.stderr.readline, ''):
+                        if line:
+                            self.stderr_content += line
+                            logger.debug(f"Codex stderr: {line.strip()}")
+            
+            stdout_thread = threading.Thread(target=capture_stdout)
+            stderr_thread = threading.Thread(target=capture_stderr)
+            stdout_thread.daemon = True
+            stderr_thread.daemon = True
+            stdout_thread.start()
+            stderr_thread.start()
+            
+            logger.info(f"Launched Codex CLI in {self.workspace_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to launch Codex CLI: {e}")
+            return False
+    
+    def is_running(self) -> bool:
+        """Check if Codex CLI is still running."""
+        if not self.process:
+            return False
+        return self.process.poll() is None
+    
+    def terminate(self) -> None:
+        """Terminate Codex CLI process."""
+        if self.process and self.is_running():
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+            logger.info("Terminated Codex CLI")
+        
+        # Save logs after process termination (if not already saved)
+        if not self.logs_saved:
+            self._save_output_log()
+    
+    def get_runtime(self) -> float:
+        """Get how long the agent has been running."""
+        if self.start_time:
+            return time.time() - self.start_time
+        return 0.0
+    
+    def save_logs(self) -> None:
+        """Manually save logs (useful for monitoring during execution)."""
+        self._save_output_log()
+    
+    def _save_output_log(self):
+        """Save Codex CLI output to agent.log file."""
+        if self.logs_saved:
+            return  # Already saved
+            
+        try:
+            log_file = self.workspace_path / "agent.log"
+            with open(log_file, 'w') as f:
+                f.write("Codex CLI Output Log\n")
+                f.write("=" * 50 + "\n\n")
+                
+                # Add run metadata
+                f.write(f"Runtime: {self.get_runtime():.2f} seconds\n")
+                f.write(f"Process completed: {not self.is_running()}\n")
+                f.write("\n")
+                
+                f.write("STDOUT:\n")
+                f.write("-" * 20 + "\n")
+                f.write(self.stdout_content if self.stdout_content else "(no stdout output)\n")
+                f.write("\n\n")
+                
+                f.write("STDERR:\n")
+                f.write("-" * 20 + "\n")
+                f.write(self.stderr_content if self.stderr_content else "(no stderr output)\n")
+                f.write("\n\n")
+                
+                f.write(f"Log saved at: {datetime.now().isoformat()}\n")
+                
+            self.logs_saved = True
+            logger.info(f"Saved Codex CLI output log to {log_file}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save Codex CLI output log: {e}")
+
+
 # Registry of available agent runners
 AGENT_RUNNERS = {
     "claude": ClaudeCodeRunner,
     "gemini": GeminiCLIRunner,
+    "codex": CodexCLIRunner,
 }
 
 # Add smolagents if available

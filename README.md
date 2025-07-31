@@ -28,6 +28,38 @@ pip install -e .
 pip install -e ".[dev]"
 ```
 
+### Agent-Specific Setup
+
+Some agents require additional setup:
+
+**Claude Code**:
+```bash
+npm install -g claude-code
+export ANTHROPIC_API_KEY='your-api-key'
+```
+
+**OpenAI (Function Calling)**:
+```bash
+export OPENAI_API_KEY='your-api-key'
+```
+
+**Codex CLI**:
+```bash
+# Install via brew or npm
+brew install codex
+# OR
+npm i -g @openai/codex
+
+# Set API key
+export OPENAI_API_KEY='your-api-key'
+```
+
+**Gemini CLI**:
+```bash
+# Install Gemini CLI (varies by system)
+# Set up authentication as per Gemini documentation
+```
+
 ### Basic Usage
 
 1. **Configure your agents** in `test_config.yaml`:
@@ -56,6 +88,12 @@ python run_agent_tests.py
 # Test specific agent with specific model
 python run_agent_tests.py --agent openai --model o3-mini
 
+# Test with Codex CLI
+python run_agent_tests.py --agent codex --problem leetcode_2933
+
+# Test random problem with Codex
+python run_agent_tests.py --agent codex --random --quick
+
 # Test specific problems
 python run_agent_tests.py --problem abc123_a --problem leetcode_456
 ```
@@ -68,6 +106,7 @@ python run_agent_tests.py --problem abc123_a --problem leetcode_456
 |-------|-------------|---------|
 | `claude` | Claude Code CLI | claude-3-5-sonnet, claude-3-opus |  
 | `openai` | OpenAI Function Calling | gpt-4, gpt-4o, o3-mini, o4-mini |
+| `codex` | OpenAI Codex CLI | o4-mini (default), o3-mini, o3, o4 |
 | `gemini` | Gemini CLI | gemini-pro, gemini-1.5 |
 | `smolagents` | HuggingFace SmolAgents | various HF models |
 
