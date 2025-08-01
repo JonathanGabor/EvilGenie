@@ -88,6 +88,9 @@ python run_agent_tests.py
 # Test specific agent with specific model
 python run_agent_tests.py --agent openai --model o3-mini
 
+# Test OpenAI Responses API with Code Interpreter
+python run_agent_tests.py --agent openai-responses --model o4-mini
+
 # Test with Codex CLI
 python run_agent_tests.py --agent codex --problem leetcode_2933
 
@@ -106,6 +109,7 @@ python run_agent_tests.py --problem abc123_a --problem leetcode_456
 |-------|-------------|---------|
 | `claude` | Claude Code CLI | claude-3-5-sonnet, claude-3-opus |  
 | `openai` | OpenAI Function Calling | gpt-4, gpt-4o, o3-mini, o4-mini |
+| `openai-responses` | OpenAI Responses API (Code Interpreter) | o3, o3-mini, o4, o4-mini |
 | `codex` | OpenAI Codex CLI | o4-mini (default), o3-mini, o3, o4 |
 | `gemini` | Gemini CLI | gemini-pro, gemini-1.5 |
 | `smolagents` | HuggingFace SmolAgents | various HF models |
@@ -208,7 +212,9 @@ python run_agent_tests.py [OPTIONS]
 # Problem selection  
 --problem PROBLEM_ID        # Test specific problem
 --problems ID1 ID2          # Test multiple problems
---difficulty DIFFICULTY     # Filter by difficulty
+--difficulty DIFFICULTY     # Filter by difficulty (easy, medium, hard, 
+                              atcoder_easy, atcoder_medium, atcoder_hard,
+                              atcoder_expert, atcoder_master, atcoder_grandmaster)
 --platform PLATFORM        # Filter by platform
 --max-problems N            # Limit number of problems
 
@@ -228,6 +234,11 @@ python run_agent_tests.py [OPTIONS]
 ### Test OpenAI O3 model on easy problems:
 ```bash
 python run_agent_tests.py --agent openai --model o3-mini --difficulty easy --max-problems 5
+```
+
+### Test AtCoder problems with fine-grained difficulty:
+```bash
+python run_agent_tests.py --agent openai-responses --difficulty atcoder_expert --platform atcoder
 ```
 
 ### Compare multiple agents on specific problems:

@@ -29,6 +29,11 @@ try:
         from .agents import OpenAIFunctionCallingRunner
     except ImportError:
         pass
+    
+    try:
+        from .agents import OpenAIResponsesRunner
+    except ImportError:
+        pass
         
 except ImportError:
     # Fall back to absolute import (when run directly)
@@ -49,6 +54,11 @@ except ImportError:
 
     try:
         from agents import OpenAIFunctionCallingRunner
+    except ImportError:
+        pass
+    
+    try:
+        from agents import OpenAIResponsesRunner
     except ImportError:
         pass
 
@@ -72,12 +82,16 @@ if 'SmolagentsRunner' in globals():
 if 'OpenAIFunctionCallingRunner' in globals():
     __all__.append('OpenAIFunctionCallingRunner')
 
+if 'OpenAIResponsesRunner' in globals():
+    __all__.append('OpenAIResponsesRunner')
+
 
 def create_agent_runner(agent_type: str, workspace_path: str, config: Dict[str, Any]) -> Optional[AgentRunner]:
     """Factory function to create an agent runner."""
     runner_class = AGENT_RUNNERS.get(agent_type.lower())
     if not runner_class:
         logger.error(f"Unknown agent type: {agent_type}")
+        logger.error(f"Available agents: {list(AGENT_RUNNERS.keys())}")
         return None
     
     return runner_class(workspace_path, config)

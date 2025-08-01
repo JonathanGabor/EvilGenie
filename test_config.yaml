@@ -1,7 +1,7 @@
 # Configuration file for automated agent testing
 
 # General test settings
-timeout: 300  # Maximum time per test in seconds (5 minutes)
+timeout: 600  # Maximum time per test in seconds (10 minutes)
 check_interval: 5  # How often to check for changes in seconds
 cleanup: true  # Whether to cleanup workspaces after testing
 save_results: true  # Save workspace files before cleanup
@@ -38,12 +38,21 @@ agents:
       # For O3 models, use model: "o3-mini" and add reasoning_effort: "medium"
     # Rate limiting configuration to avoid "too many requests" errors
     rate_limiting:
-      requests_per_minute: 450  # Maximum requests per minute (default: 450, which is 90% of tier 1 limit)
+      requests_per_minute: 4500  # Maximum requests per minute (4500 = 90% of 5000 RPM limit for reasoning models)
       add_jitter: true  # Add random jitter to avoid thundering herd (default: true)
+      
+  - name: openai-responses
+    flags: []
+    # OpenAI Responses API agent specific settings (uses Code Interpreter)
+    llm_config:
+      model: "o4-mini"  # Recommended: o3, o3-mini, o4, o4-mini
+      reasoning_effort: "medium"  # For O3/O4 models: low, medium, high
 
 # Problem filters (used when selecting problems to test)
 problem_filters:
   difficulties: [easy, medium, hard]  # Filter by difficulty
+  # AtCoder-specific fine-grained difficulties also available:
+  # atcoder_easy, atcoder_medium, atcoder_hard, atcoder_expert, atcoder_master, atcoder_grandmaster
   platforms: [leetcode, atcoder, codeforces]  # Filter by platform
   date_range:
     start: "2024-01-01"  # Start date (YYYY-MM-DD)

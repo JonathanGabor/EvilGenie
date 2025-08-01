@@ -26,6 +26,13 @@ class Difficulty(Enum):
     EASY = "easy"
     MEDIUM = "medium"
     HARD = "hard"
+    # AtCoder-specific fine-grained difficulties
+    ATCODER_EASY = "atcoder_easy"       # ABC A, B problems
+    ATCODER_MEDIUM = "atcoder_medium"   # ABC C, D problems  
+    ATCODER_HARD = "atcoder_hard"       # ABC E, F problems
+    ATCODER_EXPERT = "atcoder_expert"   # ARC A, B, AGC A problems
+    ATCODER_MASTER = "atcoder_master"   # ARC C, D, AGC B problems
+    ATCODER_GRANDMASTER = "atcoder_grandmaster"  # ARC E, F, AGC C+ problems
 
 
 class TestType(Enum):
@@ -125,6 +132,56 @@ class CodeGenerationProblem:
         }
 
 
+def get_atcoder_granular_difficulty(problem: 'CodeGenerationProblem') -> Difficulty:
+    """
+    Map AtCoder problems to granular difficulty based on contest type and problem position.
+    
+    Based on typical AtCoder difficulty progression:
+    - ABC (AtCoder Beginner Contest): A/B (easy), C/D (medium), E/F (hard)
+    - ARC (AtCoder Regular Contest): A/B (expert), C/D (master), E/F (grandmaster)
+    - AGC (AtCoder Grand Contest): A (expert), B (master), C+ (grandmaster)
+    """
+    if problem.platform != Platform.ATCODER:
+        return problem.difficulty
+    
+    contest_id = problem.contest_id.lower()
+    question_id = problem.question_id.lower()
+    
+    # Extract problem letter (last character of question_id usually)
+    problem_letter = question_id[-1] if question_id else 'a'
+    
+    # ABC contests (Beginner)
+    if 'abc' in contest_id:
+        if problem_letter in ['a', 'b']:
+            return Difficulty.ATCODER_EASY
+        elif problem_letter in ['c', 'd']:
+            return Difficulty.ATCODER_MEDIUM
+        else:  # e, f, g, h
+            return Difficulty.ATCODER_HARD
+    
+    # ARC contests (Regular)
+    elif 'arc' in contest_id:
+        if problem_letter in ['a', 'b']:
+            return Difficulty.ATCODER_EXPERT
+        elif problem_letter in ['c', 'd']:
+            return Difficulty.ATCODER_MASTER
+        else:  # e, f
+            return Difficulty.ATCODER_GRANDMASTER
+    
+    # AGC contests (Grand)
+    elif 'agc' in contest_id:
+        if problem_letter == 'a':
+            return Difficulty.ATCODER_EXPERT
+        elif problem_letter == 'b':
+            return Difficulty.ATCODER_MASTER
+        else:  # c, d, e, f
+            return Difficulty.ATCODER_GRANDMASTER
+    
+    # Other contests - fall back to original difficulty
+    else:
+        return problem.difficulty
+
+
 def load_code_generation_dataset(
     release_version: str = "release_v1", 
     start_date: Optional[str] = None, 
@@ -162,7 +219,12 @@ def load_code_generation_dataset(
     if difficulty is not None:
         if isinstance(difficulty, str):
             difficulty = Difficulty(difficulty)
-        dataset = [e for e in dataset if e.difficulty == difficulty]
+        
+        # For AtCoder-specific difficulties, use granular mapping
+        if difficulty.value.startswith('atcoder_'):
+            dataset = [e for e in dataset if get_atcoder_granular_difficulty(e) == difficulty]
+        else:
+            dataset = [e for e in dataset if e.difficulty == difficulty]
 
     print(f"Loaded {len(dataset)} problems")
     return dataset

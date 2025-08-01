@@ -17,7 +17,9 @@ class OpenAIRateLimiter:
         """Initialize rate limiter.
         
         Args:
-            requests_per_minute: Maximum requests per minute (default 200, conservative limit)
+            requests_per_minute: Maximum requests per minute
+                - 200: Conservative default for older models
+                - 4500: For reasoning models (90% of 5000 RPM limit)
             add_jitter: Whether to add random jitter to delays
         """
         self.requests_per_minute = requests_per_minute

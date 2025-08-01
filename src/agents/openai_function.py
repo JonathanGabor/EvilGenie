@@ -8,7 +8,7 @@ import json
 import logging
 import threading
 import subprocess
-from typing import Dict, Any, Optional, List, tuple
+from typing import Dict, Any, Optional, List, Tuple
 
 from .base import AgentRunner
 from .rate_limiter import OpenAIRateLimiter
@@ -172,7 +172,7 @@ class OpenAIFunctionCallingRunner(AgentRunner):
             logger.error(f"Error downloading output files: {e}")
             return False
     
-    def _run_local_tests(self) -> tuple[bool, str]:
+    def _run_local_tests(self) -> Tuple[bool, str]:
         """Run local tests and return (success, output)."""
         try:
             solution_path = self.workspace_path / "solution.py"

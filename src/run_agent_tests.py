@@ -61,8 +61,19 @@ def get_problems_from_config(config: Dict[str, Any]) -> List[str]:
         
         # Filter by difficulty
         if 'difficulties' in filters:
+            from problems import get_atcoder_granular_difficulty
             difficulty_values = filters['difficulties']
-            problems = [p for p in problems if p.difficulty.value in difficulty_values]
+            filtered_problems = []
+            for p in problems:
+                # For AtCoder problems, check both original and granular difficulty
+                if p.platform.value == 'atcoder':
+                    granular_diff = get_atcoder_granular_difficulty(p)
+                    if p.difficulty.value in difficulty_values or granular_diff.value in difficulty_values:
+                        filtered_problems.append(p)
+                else:
+                    if p.difficulty.value in difficulty_values:
+                        filtered_problems.append(p)
+            problems = filtered_problems
         
         # Filter by platform
         if 'platforms' in filters:
@@ -115,8 +126,10 @@ def main():
                        help='Select a random problem to test')
     
     parser.add_argument('--difficulty', '-d',
-                       choices=['easy', 'medium', 'hard'],
-                       help='Filter problems by difficulty')
+                       choices=['easy', 'medium', 'hard', 
+                               'atcoder_easy', 'atcoder_medium', 'atcoder_hard',
+                               'atcoder_expert', 'atcoder_master', 'atcoder_grandmaster'],
+                       help='Filter problems by difficulty (including AtCoder-specific levels)')
     
     parser.add_argument('--platform',
                        choices=['leetcode', 'atcoder', 'codeforces'],
@@ -127,7 +140,7 @@ def main():
                        help='Maximum number of problems to test')
     
     parser.add_argument('--release-version',
-                       default='release_v1',
+                       default='v6',
                        help='Dataset release version (release_v1, release_v6, etc.)')
     
     parser.add_argument('--quick',
@@ -170,7 +183,7 @@ def main():
     if args.quick:
         print("🚀 Quick mode: using minimal configuration")
         config = {
-            'timeout': 300,
+            'timeout': 600,
             'cleanup': True,
             'agents': [{'name': 'claude', 'flags': []}],
             'problem_filters': {
@@ -187,7 +200,7 @@ def main():
             
             # Create default config if it doesn't exist
             default_config = {
-                'timeout': 300,
+                'timeout': 600,
                 'cleanup': True,
                 'agents': [{'name': 'claude', 'flags': []}],
                 'problem_filters': {
@@ -338,7 +351,18 @@ def main():
                     all_problems = get_cached_problems(release_version)
                     
                     if args.difficulty:
-                        all_problems = [p for p in all_problems if p.difficulty.value == args.difficulty]
+                        from problems import get_atcoder_granular_difficulty
+                        filtered_problems = []
+                        for p in all_problems:
+                            # For AtCoder problems, check both original and granular difficulty
+                            if p.platform.value == 'atcoder':
+                                granular_diff = get_atcoder_granular_difficulty(p)
+                                if p.difficulty.value == args.difficulty or granular_diff.value == args.difficulty:
+                                    filtered_problems.append(p)
+                            else:
+                                if p.difficulty.value == args.difficulty:
+                                    filtered_problems.append(p)
+                        all_problems = filtered_problems
                     if args.platform:
                         all_problems = [p for p in all_problems if p.platform.value == args.platform]
                     
@@ -398,7 +422,7 @@ def main():
         if agent_config.get('name') == 'openai':
             model = agent_config.get('llm_config', {}).get('model', 'o4-mini')
             if model.startswith('o3') or model == 'o3' or model.startswith('o4') or model == 'o4':
-                old_timeout = config.get('timeout', 300)
+                old_timeout = config.get('timeout', 600)
                 new_timeout = 1800  # 30 minutes for reasoning models
                 config['timeout'] = new_timeout
                 print(f"⚡ Detected reasoning model {model}, increasing timeout from {old_timeout}s to {new_timeout}s")
