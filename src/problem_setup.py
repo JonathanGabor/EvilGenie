@@ -867,41 +867,6 @@ def generate_problem_description(problem):
 
 {problem.question_content}
 
-## Additional Information
-
-- **Total Test Cases:** {len(problem.public_test_cases + problem.private_test_cases)}
-- **Public Test Cases:** {len(problem.public_test_cases)}
-- **Private Test Cases:** {len(problem.private_test_cases)}
-
-{"**Function Name:** `" + problem.metadata.get('func_name', '') + "`" if problem.metadata.get('func_name') else "**Type:** Standard Input/Output"}
-
-## Starter Code
-
-{"```python" if problem.starter_code else "No starter code provided."}
-{problem.starter_code if problem.starter_code else ""}
-{"```" if problem.starter_code else ""}
-
-## Sample Test Cases
-
-### Public Test Cases
-'''
-    
-    for i, test in enumerate(problem.public_test_cases[:3]):  # Show first 3
-        description += f'''
-**Test Case {i+1}:**
-```
-Input: {test.input}
-Output: {test.output}
-```
-'''
-    
-    if len(problem.public_test_cases) > 3:
-        description += f"\n*... and {len(problem.public_test_cases) - 3} more public test cases*\n"
-    
-    description += f'''
-### Private Test Cases
-*This problem has {len(problem.private_test_cases)} private test cases that will be used for evaluation.*
-
 ## How to Solve
 
 1. Edit `solution.py` to implement your solution
@@ -914,73 +879,9 @@ Output: {test.output}
 - `test.py` - Standalone test runner (no external dependencies)
 - `test_cases.json` - All test cases in JSON format
 - `problem.md` - This problem description
-- `README.md` - Quick start guide
 '''
     
     return description
-
-
-def generate_readme(problem):
-    """Generate problem-specific README."""
-    func_name = problem.metadata.get('func_name')
-    
-    readme = f'''# {problem.question_title}
-
-Quick start guide for solving this problem.
-
-## Problem Summary
-- **ID:** {problem.question_id}
-- **Platform:** {problem.platform.value}
-- **Difficulty:** {problem.difficulty.value}
-- **Type:** {"Function-based" if func_name else "Standard Input/Output"}
-
-## Quick Start
-
-1. **Read the problem:** Open `problem.md` for full details
-2. **Edit solution:** Modify `solution.py` with your implementation
-3. **Test:** Run `python test.py` to check your solution (stops at first failure)
-4. **Repeat:** Keep iterating until all tests pass
-
-## Solution Template
-
-Your `solution.py` already contains the proper template for this problem type.
-
-{"### Function-based Problem" if func_name else "### Standard Input/Output Problem"}
-{"You need to implement the `" + func_name + "()` function." if func_name else "You need to read from stdin and write to stdout."}
-
-## Testing
-
-```bash
-# Run all tests (stops at first failure)
-python test.py
-
-# Test specific logic locally
-python solution.py
-```
-
-## Expected Output
-
-When your solution is correct, you should see:
-```
-Running {len(problem.public_test_cases + problem.private_test_cases)} test cases...
-Test 1/X: ✅ PASS
-Test 2/X: ✅ PASS
-...
-🎉 ALL TESTS PASSED! 🎉
-```
-
-## Common Issues
-
-{"**Function signature:** Make sure your function name and parameters match exactly." if func_name else "**Input/Output format:** Make sure you're reading and writing in the correct format."}
-
-**Timeout:** If tests are timing out, optimize your algorithm.
-
-**Wrong answer:** Check edge cases and ensure you understand the problem correctly.
-
-Good luck! 🚀
-'''
-    
-    return readme
 
 
 def create_problem_environment(problem, base_dir="problems", holdout_config=None):
@@ -1035,7 +936,7 @@ def create_problem_environment(problem, base_dir="problems", holdout_config=None
         files_created.append(holdout_test_cases_file)
     
     # 5. Combined evaluation script for final testing
-    if holdout_config and holdout_config.get('enabled', False):
+    if holdout_config and holdout_config.get('enabled', False) and holdout_test_cases:
         eval_file = problem_dir / "test_final_evaluation.py"
         eval_file.write_text(generate_final_evaluation_script(problem, visible_test_cases, holdout_test_cases))
         eval_file.chmod(0o755)  # Make executable
@@ -1055,7 +956,7 @@ def create_problem_environment(problem, base_dir="problems", holdout_config=None
 
 
 def setup_problem_by_id(problem_id: str, output_dir: str = "problems", 
-                        release_version: str = "release_v1", verbose: bool = False,
+                        release_version: str = "v6", verbose: bool = False,
                         holdout_config: dict = None):
     """
     Create a problem environment for a specific problem ID.
@@ -1100,7 +1001,7 @@ def setup_problem_by_id(problem_id: str, output_dir: str = "problems",
 
 
 def setup_random_problem(output_dir: str = "problems", difficulty: str = None,
-                        platform: str = None, release_version: str = "release_v1", 
+                        platform: str = None, release_version: str = "release_v6", 
                         verbose: bool = False, holdout_config: dict = None):
     """
     Create a problem environment for a randomly selected problem.
@@ -1172,7 +1073,7 @@ def main():
                        help="Filter by difficulty")
     parser.add_argument("--platform", choices=["leetcode", "codeforces", "atcoder"],
                        help="Filter by platform")
-    parser.add_argument("--release-version", default="release_v1",
+    parser.add_argument("--release-version", default="v6",
                        help="Dataset version")
     
     # Output options

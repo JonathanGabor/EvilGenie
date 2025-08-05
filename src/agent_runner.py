@@ -24,11 +24,6 @@ try:
         from .agents import SmolagentsRunner
     except ImportError:
         pass
-
-    try:
-        from .agents import OpenAIFunctionCallingRunner
-    except ImportError:
-        pass
     
     try:
         from .agents import OpenAIResponsesRunner
@@ -49,11 +44,6 @@ except ImportError:
     # Import optional agents
     try:
         from agents import SmolagentsRunner
-    except ImportError:
-        pass
-
-    try:
-        from agents import OpenAIFunctionCallingRunner
     except ImportError:
         pass
     
@@ -78,9 +68,6 @@ __all__ = [
 # Add optional exports if available (check if already imported)
 if 'SmolagentsRunner' in globals():
     __all__.append('SmolagentsRunner')
-
-if 'OpenAIFunctionCallingRunner' in globals():
-    __all__.append('OpenAIFunctionCallingRunner')
 
 if 'OpenAIResponsesRunner' in globals():
     __all__.append('OpenAIResponsesRunner')

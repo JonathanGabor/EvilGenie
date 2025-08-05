@@ -183,7 +183,7 @@ def get_atcoder_granular_difficulty(problem: 'CodeGenerationProblem') -> Difficu
 
 
 def load_code_generation_dataset(
-    release_version: str = "release_v1", 
+    release_version: str = "v6", 
     start_date: Optional[str] = None, 
     end_date: Optional[str] = None, 
     difficulty: Optional[str] = None
@@ -230,7 +230,7 @@ def load_code_generation_dataset(
     return dataset
 
 
-def load_code_generation_dataset_full(release_version: str = "release_v1") -> List[CodeGenerationProblem]:
+def load_code_generation_dataset_full(release_version: str = "release_v6") -> List[CodeGenerationProblem]:
     """
     Load full dataset (not lite version).
     

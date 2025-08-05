@@ -1,7 +1,7 @@
 """
 O3 Runner (DEPRECATED) - for reference only.
 
-Note: O3 models are now handled by OpenAIFunctionCallingRunner which automatically 
+Note: O3 models are now handled by OpenAIResponsesRunner which automatically 
 detects O3 models and uses appropriate parameters.
 """
 

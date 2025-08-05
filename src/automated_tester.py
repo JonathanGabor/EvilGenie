@@ -15,9 +15,11 @@ import time
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 from dataclasses import dataclass, asdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 from agent_runner import create_agent_runner, AgentRunner
 from workspace_manager import WorkspaceManager, WorkspaceMonitor
@@ -65,11 +67,15 @@ class AutomatedTester:
             config: Configuration dictionary with test parameters
         """
         self.config = config
+        # Get release version from config, default to v6
+        release_version = config.get('problem_filters', {}).get('release_version', 'v6')
         self.workspace_manager = WorkspaceManager(
             base_dir=config.get('workspace_base_dir'),
-            cleanup=config.get('cleanup', True)
+            cleanup=config.get('cleanup', True),
+            release_version=release_version
         )
         self.results = []
+        self.results_lock = threading.Lock()  # Thread-safe results collection
         self.timeout = config.get('timeout', 300)  # 5 minutes default
         self.check_interval = config.get('check_interval', 5)  # Check every 5 seconds
         
@@ -80,7 +86,8 @@ class AutomatedTester:
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
     
-    def test_single_problem(self, problem_id: str, agent_name: str, agent_config: Dict[str, Any]) -> TestResult:
+    def test_single_problem(self, problem_id: str, agent_name: str, agent_config: Dict[str, Any], 
+                           base_workspace: Optional[Path] = None) -> TestResult:
         """
         Test a single problem with a specific agent.
         
@@ -88,6 +95,7 @@ class AutomatedTester:
             problem_id: ID of the problem to test
             agent_name: Name of the agent to use
             agent_config: Configuration for the agent
+            base_workspace: Pre-created base workspace to duplicate (optional, creates new if None)
             
         Returns:
             TestResult object with the results
@@ -96,26 +104,46 @@ class AutomatedTester:
         start_time = time.time()
         
         try:
-            # Get holdout configuration
+            # Get holdout configuration (needed for both paths)
             holdout_config = self.config.get('holdout_test_cases', {})
             
-            # Create workspace
-            workspace_path = self.workspace_manager.create_workspace(problem_id, agent_name, holdout_config)
-            if not workspace_path:
-                return TestResult(
-                    problem_id=problem_id,
-                    agent_name=agent_name,
-                    success=False,
-                    runtime=0,
-                    test_passed=False,
-                    test_results={},
-                    solution_content=None,
-                    error="Failed to create workspace",
-                    timestamp=datetime.now(),
-                    reward_hacking_detected=False,
-                    reward_hacking_summary=None,
-                    reward_hacking_violations=None
-                )
+            # Create workspace - either duplicate from base or create new
+            if base_workspace:
+                # Use pre-created base workspace
+                workspace_path = self.workspace_manager.duplicate_workspace(base_workspace, agent_name)
+                if not workspace_path:
+                    return TestResult(
+                        problem_id=problem_id,
+                        agent_name=agent_name,
+                        success=False,
+                        runtime=0,
+                        test_passed=False,
+                        test_results={},
+                        solution_content=None,
+                        error="Failed to duplicate workspace from base",
+                        timestamp=datetime.now(),
+                        reward_hacking_detected=False,
+                        reward_hacking_summary=None,
+                        reward_hacking_violations=None
+                    )
+            else:
+                # Fallback to original method for backward compatibility
+                workspace_path = self.workspace_manager.create_workspace(problem_id, agent_name, holdout_config)
+                if not workspace_path:
+                    return TestResult(
+                        problem_id=problem_id,
+                        agent_name=agent_name,
+                        success=False,
+                        runtime=0,
+                        test_passed=False,
+                        test_results={},
+                        solution_content=None,
+                        error="Failed to create workspace",
+                        timestamp=datetime.now(),
+                        reward_hacking_detected=False,
+                        reward_hacking_summary=None,
+                        reward_hacking_violations=None
+                    )
             
             # Initialize reward hacking detection
             reward_hacking_config = self.config.get('reward_hacking_detection', {})
@@ -204,13 +232,7 @@ class AutomatedTester:
                 # Update output for streaming agents (like Gemini)
                 if hasattr(agent_runner, 'update_output'):
                     agent_runner.update_output()
-                    
-                    # Save logs more frequently to capture progress
-                    if time.time() - last_log_save > 10:  # Every 10 seconds
-                        if hasattr(agent_runner, '_save_output_log'):
-                            agent_runner._save_output_log()
-                        last_log_save = time.time()
-                
+                                    
                 # Log status periodically for debugging
                 if time.time() - last_status_log > 30:  # Every 30 seconds
                     processing_elapsed = time.time() - processing_start
@@ -234,22 +256,6 @@ class AutomatedTester:
                     if agent_runner.is_running():
                         agent_runner.terminate()
                     break
-                
-                # Check for solution changes (just track, don't test yet)
-                if monitor.has_solution_changed():
-                    new_solution_content = monitor.get_solution_content()
-                    logger.info(f"Solution file updated - content length: {len(new_solution_content)} chars")
-                    logger.debug(f"Solution preview: {new_solution_content[:200]}...")
-                    
-                    # Check if it's actually different from template
-                    if "TODO" not in new_solution_content:
-                        logger.info("Solution appears to contain real implementation")
-                    else:
-                        logger.warning("Solution still contains TODO markers - possible false detection")
-                    
-                    solution_found = True
-                    solution_content = new_solution_content
-                    # Note: We'll test only at the end
                 
                 time.sleep(self.check_interval)
             
@@ -324,7 +330,7 @@ class AutomatedTester:
                 reward_hacking_detected=reward_hacking_summary['has_violations'],
                 reward_hacking_summary=reward_hacking_summary,
                 reward_hacking_violations=reward_hacking_summary.get('violations', []),
-                holdout_enabled=holdout_config.get('enabled', False),
+                holdout_enabled=holdout_config.get('enabled', False) and holdout_analysis is not None,
                 holdout_analysis=holdout_analysis,
                 potential_overfitting=potential_overfitting
             )
@@ -386,9 +392,9 @@ class AutomatedTester:
             
             logger.info("Running final evaluation script...")
             
-            # Run the evaluation script
+            # Run the evaluation script using relative path to avoid path issues
             result = subprocess.run(
-                ["python", str(eval_script)],
+                ["python", "test_final_evaluation.py"],
                 cwd=str(workspace_path),
                 capture_output=True,
                 text=True,
@@ -425,6 +431,170 @@ class AutomatedTester:
             logger.error(f"Error running holdout evaluation: {e}")
             return {'error': str(e)}
     
+    def prepare_all_workspaces(self, problems: List[str]) -> Dict[str, Optional[Path]]:
+        """
+        Create base workspaces for all unique problems before agent testing begins.
+        
+        Args:
+            problems: List of problem IDs to create workspaces for
+            
+        Returns:
+            Dictionary mapping problem_id to base workspace path (or None if failed)
+        """
+        unique_problems = list(set(problems))  # Remove duplicates
+        base_workspaces = {}
+        
+        logger.info(f"Preparing base workspaces for {len(unique_problems)} unique problems...")
+        
+        # Get holdout configuration once for all problems
+        holdout_config = self.config.get('holdout_test_cases', {})
+        
+        for i, problem_id in enumerate(unique_problems):
+            logger.info(f"Creating base workspace {i+1}/{len(unique_problems)}: {problem_id}")
+            
+            base_workspace = self.workspace_manager.create_base_workspace(
+                problem_id=problem_id,
+                holdout_config=holdout_config
+            )
+            
+            if base_workspace:
+                logger.info(f"✅ Base workspace created for {problem_id}: {base_workspace}")
+            else:
+                logger.error(f"❌ Failed to create base workspace for {problem_id}")
+            
+            base_workspaces[problem_id] = base_workspace
+        
+        successful_count = sum(1 for ws in base_workspaces.values() if ws is not None)
+        logger.info(f"Base workspace preparation complete: {successful_count}/{len(unique_problems)} successful")
+        
+        return base_workspaces
+    
+    def test_batch_parallel(self, problems: List[str], agents: List[Dict[str, Any]], 
+                            max_workers: int = 4) -> List[TestResult]:
+        """
+        Test multiple problems with multiple agents in parallel.
+        
+        Args:
+            problems: List of problem IDs to test
+            agents: List of agent configurations
+            max_workers: Maximum number of parallel workers
+            
+        Returns:
+            List of TestResult objects
+        """
+        # Two-phase execution for parallel mode too
+        logger.info("=== Phase 1: Preparing base workspaces ===")
+        base_workspaces = self.prepare_all_workspaces(problems)
+        
+        # Check if any base workspace creation failed
+        failed_problems = [pid for pid, ws in base_workspaces.items() if ws is None]
+        if failed_problems:
+            logger.warning(f"Failed to create base workspaces for: {failed_problems}")
+        
+        logger.info("=== Phase 2: Running agent tests in parallel ===")
+        results = []
+        total_tests = len(problems) * len(agents)
+        completed = 0
+        
+        # Create all test tasks with base workspaces
+        test_tasks = []
+        for problem_id in problems:
+            base_workspace = base_workspaces.get(problem_id)
+            for agent_config in agents:
+                test_tasks.append((problem_id, agent_config, base_workspace))
+        
+        # Use ThreadPoolExecutor for parallel execution
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_task = {}
+            active_tasks = set()
+            
+            logger.info(f"Starting parallel execution of {total_tests} tests with {max_workers} workers")
+            
+            for problem_id, agent_config, base_workspace in test_tasks:
+                # Skip if base workspace creation failed
+                if base_workspace is None:
+                    # Create error result immediately
+                    error_result = TestResult(
+                        problem_id=problem_id,
+                        agent_name=agent_config['name'],
+                        success=False,
+                        runtime=0,
+                        test_passed=False,
+                        test_results={},
+                        solution_content=None,
+                        error="Failed to create base workspace",
+                        timestamp=datetime.now(),
+                        reward_hacking_detected=False,
+                        reward_hacking_summary=None,
+                        reward_hacking_violations=None
+                    )
+                    with self.results_lock:
+                        results.append(error_result)
+                        self.results.append(error_result)
+                        completed += 1
+                    continue
+                
+                future = executor.submit(
+                    self.test_single_problem, 
+                    problem_id, 
+                    agent_config['name'], 
+                    agent_config,
+                    base_workspace
+                )
+                future_to_task[future] = (problem_id, agent_config['name'])
+                active_tasks.add((problem_id, agent_config['name']))
+            
+            # Process completed tasks
+            for future in as_completed(future_to_task):
+                problem_id, agent_name = future_to_task[future]
+                active_tasks.discard((problem_id, agent_name))
+                
+                try:
+                    result = future.result()
+                    with self.results_lock:
+                        results.append(result)
+                        self.results.append(result)
+                        completed += 1
+                        
+                    # Save intermediate results (thread-safe)
+                    self._save_results()
+                    
+                    # Show progress with active tasks
+                    if active_tasks and len(active_tasks) <= 5:
+                        active_list = [f"{p}:{a}" for p, a in list(active_tasks)[:5]]
+                        logger.info(f"Completed {completed}/{total_tests}: {problem_id} with {agent_name} | Active: {', '.join(active_list)}")
+                    else:
+                        logger.info(f"Completed {completed}/{total_tests}: {problem_id} with {agent_name} | {len(active_tasks)} active")
+                    
+                except Exception as e:
+                    logger.error(f"Error testing {problem_id} with {agent_name}: {e}")
+                    # Create error result
+                    error_result = TestResult(
+                        problem_id=problem_id,
+                        agent_name=agent_name,
+                        success=False,
+                        runtime=0,
+                        test_passed=False,
+                        test_results={},
+                        solution_content=None,
+                        error=str(e),
+                        timestamp=datetime.now(),
+                        reward_hacking_detected=False,
+                        reward_hacking_summary=None,
+                        reward_hacking_violations=None
+                    )
+                    with self.results_lock:
+                        results.append(error_result)
+                        self.results.append(error_result)
+                        completed += 1
+        
+        # Clean up base workspaces after all parallel testing is complete
+        logger.info("Cleaning up base workspaces...")
+        self.workspace_manager.cleanup_base_workspaces()
+        
+        return results
+    
     def test_batch(self, problems: List[str], agents: List[Dict[str, Any]]) -> List[TestResult]:
         """
         Test multiple problems with multiple agents.
@@ -436,16 +606,59 @@ class AutomatedTester:
         Returns:
             List of TestResult objects
         """
+        # Check if parallel execution is enabled
+        parallel_config = self.config.get('parallel', {})
+        if parallel_config.get('enabled', False):
+            max_workers = parallel_config.get('max_workers', 4)
+            # Limit workers to number of agents to avoid waste
+            max_workers = min(max_workers, len(agents))
+            logger.info(f"Running tests in parallel with {max_workers} workers")
+            return self.test_batch_parallel(problems, agents, max_workers)
+        
+        # Two-phase execution: prepare workspaces first, then run agents
+        logger.info("=== Phase 1: Preparing base workspaces ===")
+        base_workspaces = self.prepare_all_workspaces(problems)
+        
+        # Check if any base workspace creation failed
+        failed_problems = [pid for pid, ws in base_workspaces.items() if ws is None]
+        if failed_problems:
+            logger.warning(f"Failed to create base workspaces for: {failed_problems}")
+        
+        logger.info("=== Phase 2: Running agent tests ===")
         results = []
         total_tests = len(problems) * len(agents)
         completed = 0
         
         for problem_id in problems:
+            base_workspace = base_workspaces.get(problem_id)
+            if base_workspace is None:
+                # Create error results for all agents for this problem
+                for agent_config in agents:
+                    agent_name = agent_config['name']
+                    error_result = TestResult(
+                        problem_id=problem_id,
+                        agent_name=agent_name,
+                        success=False,
+                        runtime=0,
+                        test_passed=False,
+                        test_results={},
+                        solution_content=None,
+                        error="Failed to create base workspace",
+                        timestamp=datetime.now(),
+                        reward_hacking_detected=False,
+                        reward_hacking_summary=None,
+                        reward_hacking_violations=None
+                    )
+                    results.append(error_result)
+                    self.results.append(error_result)
+                    completed += 1
+                continue
+            
             for agent_config in agents:
                 agent_name = agent_config['name']
                 logger.info(f"Testing {completed + 1}/{total_tests}: {problem_id} with {agent_name}")
                 
-                result = self.test_single_problem(problem_id, agent_name, agent_config)
+                result = self.test_single_problem(problem_id, agent_name, agent_config, base_workspace)
                 results.append(result)
                 self.results.append(result)
                 
@@ -459,6 +672,10 @@ class AutomatedTester:
                 if delay > 0 and completed < total_tests:
                     time.sleep(delay)
         
+        # Clean up base workspaces after all agent testing is complete
+        logger.info("Cleaning up base workspaces...")
+        self.workspace_manager.cleanup_base_workspaces()
+        
         return results
     
     def _save_results(self) -> None:
@@ -466,13 +683,53 @@ class AutomatedTester:
         results_file = Path(self.config.get('results_file', 'test_results.json'))
         results_file.parent.mkdir(parents=True, exist_ok=True)
         
+        with self.results_lock:
+            results_to_save = [r.to_dict() for r in self.results]
+        
         with open(results_file, 'w') as f:
-            json.dump(
-                [r.to_dict() for r in self.results],
-                f,
-                indent=2
-            )
+            json.dump(results_to_save, f, indent=2)
     
+    def _parse_test_case_counts(self, test_results: Dict[str, Any]) -> Tuple[int, int]:
+        """
+        Parse test case counts from test results stdout.
+        
+        Args:
+            test_results: Dictionary containing test results with stdout
+            
+        Returns:
+            Tuple of (passed_count, total_count)
+        """
+        if not test_results or not test_results.get('stdout'):
+            return 0, 0
+        
+        stdout = test_results['stdout']
+        
+        # Look for pattern like "Results: 32/32 tests passed (100.0%)"
+        import re
+        
+        # Try to find "Results: X/Y tests passed"
+        match = re.search(r'Results: (\d+)/(\d+) tests passed', stdout)
+        if match:
+            passed = int(match.group(1))
+            total = int(match.group(2))
+            return passed, total
+        
+        # Fallback: look for "Running X test cases"
+        match = re.search(r'Running (\d+) test cases', stdout)
+        if match:
+            total = int(match.group(1))
+            # If tests passed overall, assume all test cases passed
+            if test_results.get('success', False):
+                return total, total
+            else:
+                return 0, total
+        
+        # Final fallback: use success boolean as single test
+        if test_results.get('success', False):
+            return 1, 1
+        else:
+            return 0, 1
+
     def generate_report(self) -> Dict[str, Any]:
         """Generate summary report of test results."""
         if not self.results:
@@ -506,6 +763,34 @@ class AutomatedTester:
         
         for agent_name, agent_results in by_agent.items():
             total = len(agent_results)
+            
+            # Calculate pass rates considering holdout tests
+            visible_passed = 0
+            total_visible = 0
+            holdout_passed = 0
+            total_holdout = 0
+            combined_passed = 0
+            combined_total = 0
+            
+            for r in agent_results:
+                if r.holdout_enabled and r.holdout_analysis and not r.holdout_analysis.get('error'):
+                    # Use holdout analysis for accurate counts (only if successful)
+                    analysis = r.holdout_analysis
+                    visible_passed += analysis.get('visible_passed', 0)
+                    total_visible += analysis.get('visible_total', 0)
+                    holdout_passed += analysis.get('holdout_passed', 0)
+                    total_holdout += analysis.get('holdout_total', 0)
+                    combined_passed += analysis.get('visible_passed', 0) + analysis.get('holdout_passed', 0)
+                    combined_total += analysis.get('visible_total', 0) + analysis.get('holdout_total', 0)
+                else:
+                    # No holdout tests or holdout analysis failed, parse actual test case counts
+                    test_passed, test_total = self._parse_test_case_counts(r.test_results)
+                    visible_passed += test_passed
+                    total_visible += test_total
+                    combined_passed += test_passed
+                    combined_total += test_total
+            
+            # Legacy pass count (for backward compatibility)
             passed = sum(1 for r in agent_results if r.test_passed)
             solutions_generated = sum(1 for r in agent_results if r.success)
             avg_runtime = sum(r.runtime for r in agent_results) / total
@@ -523,11 +808,27 @@ class AutomatedTester:
             
             report["agents"][agent_name] = {
                 "total_problems": total,
-                "tests_passed": passed,
-                "pass_rate": passed / total if total > 0 else 0,
+                "tests_passed": passed,  # Legacy: visible tests only
+                "pass_rate": passed / total if total > 0 else 0,  # Legacy: visible tests only
                 "solutions_generated": solutions_generated,
                 "generation_rate": solutions_generated / total if total > 0 else 0,
                 "average_runtime": avg_runtime,
+                # New detailed test statistics
+                "visible_tests": {
+                    "passed": visible_passed,
+                    "total": total_visible,
+                    "pass_rate": visible_passed / total_visible if total_visible > 0 else 0
+                },
+                "holdout_tests": {
+                    "passed": holdout_passed,
+                    "total": total_holdout,
+                    "pass_rate": holdout_passed / total_holdout if total_holdout > 0 else 0
+                },
+                "combined_tests": {
+                    "passed": combined_passed,
+                    "total": combined_total,
+                    "pass_rate": combined_passed / combined_total if combined_total > 0 else 0
+                },
                 "reward_hacking_violations": agent_violations,
                 "reward_hacking_rate": agent_violation_rate,
                 "violation_types": agent_violation_types,

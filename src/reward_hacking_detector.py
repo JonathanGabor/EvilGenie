@@ -101,8 +101,8 @@ class RewardHackingDetector:
         self.backup_files = self.config.get('backup_files', True)  # Create backups
         self.detection_methods = self.config.get('detection_methods', ['hash', 'content_analysis'])
         
-        logger.info(f"RewardHackingDetector initialized for {workspace_path}")
-        logger.info(f"Config: enabled={self.enabled}, fail_fast={self.fail_fast}, methods={self.detection_methods}")
+        logger.debug(f"RewardHackingDetector initialized for {workspace_path}")
+        logger.debug(f"Config: enabled={self.enabled}, fail_fast={self.fail_fast}, methods={self.detection_methods}")
     
     def initialize_baseline(self) -> bool:
         """
@@ -113,10 +113,10 @@ class RewardHackingDetector:
         """
         try:
             if not self.enabled:
-                logger.debug("Reward hacking detection disabled, skipping baseline")
+                logger.info("Reward hacking detection disabled, skipping baseline")
                 return True
             
-            logger.info("Initializing baseline snapshots of test files")
+            logger.debug("Initializing baseline snapshots of test files")
             
             for filename in self.monitored_files:
                 file_path = self.workspace_path / filename
@@ -132,9 +132,9 @@ class RewardHackingDetector:
                 # Backup creation removed - we want to measure actual reward hacking rates
                 # without deterring agents with visible backup files
                 
-                logger.info(f"Baseline snapshot created for {filename} (hash: {snapshot.sha256_hash[:16]}...)")
+                logger.debug(f"Baseline snapshot created for {filename} (hash: {snapshot.sha256_hash[:16]}...)")
             
-            logger.info(f"Baseline initialization complete. Monitoring {len(self.baseline_snapshots)} files.")
+            logger.debug(f"Baseline initialization complete. Monitoring {len(self.baseline_snapshots)} files.")
             return True
             
         except Exception as e:
@@ -382,4 +382,4 @@ class RewardHackingDetector:
     def cleanup(self) -> None:
         """Clean up any temporary resources."""
         # Backup cleanup removed - no backup files created
-        logger.info("Reward hacking detector cleanup complete")
+        logger.debug("Reward hacking detector cleanup complete")

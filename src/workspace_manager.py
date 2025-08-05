@@ -27,13 +27,14 @@ logger = logging.getLogger(__name__)
 class WorkspaceManager:
     """Manages isolated workspaces for testing problems."""
     
-    def __init__(self, base_dir: Optional[str] = None, cleanup: bool = True):
+    def __init__(self, base_dir: Optional[str] = None, cleanup: bool = True, release_version: str = "v6"):
         """
         Initialize workspace manager.
         
         Args:
             base_dir: Base directory for workspaces (uses temp dir if None)
             cleanup: Whether to cleanup workspaces after use
+            release_version: Dataset release version to use (default: v6)
         """
         if base_dir:
             self.base_dir = Path(base_dir)
@@ -43,8 +44,9 @@ class WorkspaceManager:
             self.base_dir.mkdir(parents=True, exist_ok=True)
             
         self.cleanup = cleanup
+        self.release_version = release_version
         self.active_workspaces = {}
-        logger.info(f"Workspace manager initialized with base dir: {self.base_dir}")
+        logger.info(f"Workspace manager initialized with base dir: {self.base_dir}, release: {self.release_version}")
     
     def create_workspace(self, problem_id: str, agent_name: str, holdout_config: dict = None) -> Optional[Path]:
         """
@@ -68,7 +70,7 @@ class WorkspaceManager:
             result = setup_problem_by_id(
                 problem_id=problem_id,
                 output_dir=str(workspace_path.absolute()),
-                release_version="release_v6",  # Use v6 to get latest problems
+                release_version=self.release_version,  # Use configured release version directly
                 verbose=True,
                 holdout_config=holdout_config
             )
@@ -100,6 +102,113 @@ class WorkspaceManager:
             
         except Exception as e:
             logger.error(f"Failed to create workspace: {e}")
+            return None
+    
+    def create_base_workspace(self, problem_id: str, holdout_config: dict = None) -> Optional[Path]:
+        """
+        Create a base workspace for a problem that can be duplicated for multiple agents.
+        
+        Args:
+            problem_id: ID of the problem to create workspace for
+            holdout_config: Configuration for holdout test cases
+            
+        Returns:
+            Path to the created base workspace or None if failed
+        """
+        try:
+            # Create base workspace name without agent
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            workspace_name = f"base_{problem_id}_{timestamp}"
+            workspace_path = self.base_dir / workspace_name
+            
+            # Use direct function call to setup problem
+            logger.info(f"Setting up base workspace for problem {problem_id} in {workspace_path}")
+            result = setup_problem_by_id(
+                problem_id=problem_id,
+                output_dir=str(workspace_path.absolute()),
+                release_version=self.release_version,
+                verbose=True,
+                holdout_config=holdout_config
+            )
+            
+            if result is None:
+                logger.error(f"Failed to setup base workspace for {problem_id}")
+                return None
+            
+            problem_dir, _ = result
+            actual_workspace = Path(problem_dir)
+            
+            # Verify the required files exist
+            required_files = ["problem.md", "solution.py", "test.py", "test_cases.json"]
+            for file_name in required_files:
+                if not (actual_workspace / file_name).exists():
+                    logger.error(f"Required file {file_name} not found in {actual_workspace}")
+                    return None
+            
+            # Store workspace info with special base workspace marker
+            self.active_workspaces[actual_workspace] = {
+                "problem_id": problem_id,
+                "agent_name": "base",  # Special marker for base workspace
+                "created_at": datetime.now(),
+                "status": "base",
+                "workspace_type": "base"
+            }
+            
+            logger.info(f"Created base workspace: {actual_workspace}")
+            return actual_workspace
+            
+        except Exception as e:
+            logger.error(f"Failed to create base workspace: {e}")
+            return None
+    
+    def duplicate_workspace(self, base_workspace: Path, agent_name: str) -> Optional[Path]:
+        """
+        Duplicate a base workspace for a specific agent.
+        
+        Args:
+            base_workspace: Path to the base workspace to duplicate
+            agent_name: Name of the agent that will use this workspace
+            
+        Returns:
+            Path to the duplicated workspace or None if failed
+        """
+        try:
+            if not base_workspace.exists():
+                logger.error(f"Base workspace does not exist: {base_workspace}")
+                return None
+            
+            # Get problem_id from base workspace info
+            base_info = self.active_workspaces.get(base_workspace)
+            if not base_info:
+                logger.error(f"Base workspace info not found: {base_workspace}")
+                return None
+            
+            problem_id = base_info["problem_id"]
+            
+            # Create agent-specific workspace name
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            workspace_name = f"{agent_name}_{problem_id}_{timestamp}"
+            agent_workspace = self.base_dir / workspace_name
+            
+            # Copy the entire base workspace to agent workspace
+            logger.info(f"Duplicating workspace from {base_workspace} to {agent_workspace}")
+            shutil.copytree(base_workspace, agent_workspace)
+            
+            # Store workspace info for the agent workspace
+            self.active_workspaces[agent_workspace] = {
+                "problem_id": problem_id,
+                "agent_name": agent_name,
+                "created_at": datetime.now(),
+                "status": "active",
+                "workspace_type": "agent",
+                "base_workspace": str(base_workspace)
+            }
+            
+            logger.info(f"Created agent workspace: {agent_workspace}")
+            return agent_workspace
+            
+        except Exception as e:
+            logger.error(f"Failed to duplicate workspace: {e}")
             return None
     
     def get_workspace_info(self, workspace_path: Path) -> Optional[Dict[str, Any]]:
@@ -139,6 +248,42 @@ class WorkspaceManager:
         except Exception as e:
             logger.error(f"Failed to cleanup workspace {workspace_path}: {e}")
             return False
+    
+    def cleanup_agent_workspaces(self, problem_id: str = None) -> None:
+        """
+        Clean up agent workspaces, optionally for a specific problem.
+        
+        Args:
+            problem_id: If specified, only clean up agent workspaces for this problem
+        """
+        if not self.cleanup:
+            logger.info("Cleanup disabled, keeping all workspaces")
+            return
+        
+        workspaces_to_clean = []
+        for workspace_path, info in self.active_workspaces.items():
+            # Only clean up agent workspaces (not base workspaces)
+            if info.get("workspace_type") == "agent":
+                if problem_id is None or info.get("problem_id") == problem_id:
+                    workspaces_to_clean.append(workspace_path)
+        
+        for workspace_path in workspaces_to_clean:
+            self.cleanup_workspace(workspace_path)
+    
+    def cleanup_base_workspaces(self) -> None:
+        """Clean up all base workspaces."""
+        if not self.cleanup:
+            logger.info("Cleanup disabled, keeping all workspaces")
+            return
+        
+        workspaces_to_clean = []
+        for workspace_path, info in self.active_workspaces.items():
+            # Only clean up base workspaces
+            if info.get("workspace_type") == "base":
+                workspaces_to_clean.append(workspace_path)
+        
+        for workspace_path in workspaces_to_clean:
+            self.cleanup_workspace(workspace_path)
     
     def cleanup_all(self) -> None:
         """Clean up all active workspaces."""

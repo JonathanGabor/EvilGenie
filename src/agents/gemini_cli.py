@@ -54,33 +54,7 @@ Problem description from problem.md:
 {problem_content}
 
 Please edit solution.py now to implement the correct solution."""
-            
-            # Prepare the command for Gemini CLI
-            # Check common Gemini CLI patterns
-            cmd = []
-            
-            # Try different possible command names
-            possible_commands = ["gemini", "gemini-cli", "geminai"]
-            gemini_cmd = None
-            
-            for possible_cmd in possible_commands:
-                try:
-                    # Test if command exists
-                    test_result = subprocess.run(
-                        [possible_cmd, "--help"], 
-                        capture_output=True, 
-                        timeout=5
-                    )
-                    if test_result.returncode == 0:
-                        gemini_cmd = possible_cmd
-                        break
-                except (subprocess.TimeoutExpired, FileNotFoundError):
-                    continue
-            
-            if not gemini_cmd:
-                logger.error("Gemini CLI not found. Tried: gemini, gemini-cli, geminai")
-                return False
-            
+            gemini_cmd = "gemini"            
             cmd = [gemini_cmd]
             
             # Add important Gemini flags for automation
@@ -116,12 +90,11 @@ Please edit solution.py now to implement the correct solution."""
             else:
                 logger.error("Failed to get stdin handle for Gemini CLI")
             
-            logger.info(f"Launched Gemini CLI ({gemini_cmd}) in {self.workspace_path}")
+            logger.info(f"Launched Gemini CLI  in {self.workspace_path}")
             
             # Initialize output storage
             self.stdout_content = ""
             self.stderr_content = ""
-            self.connection_ready = False  # Track when MCP connection is established
             
             return True
             
@@ -194,14 +167,8 @@ Please edit solution.py now to implement the correct solution."""
                         self.stdout_content += chunk
                         logger.debug(f"Gemini stdout chunk: {repr(chunk[:200])}")
                         
-                        # Detect when MCP connection is established
-                        if not self.connection_ready and "connection established" in chunk:
-                            self.connection_ready = True
-                            logger.info("Gemini MCP connection established - ready for processing")
-                            
-                        # Log any non-MCP output (actual responses)
-                        if "MCP STDERR" not in chunk:
-                            logger.info(f"Gemini actual response: {repr(chunk)}")
+                        # Log actual responses
+                        logger.info(f"Gemini response: {repr(chunk)}")
                         
                 if self.process.stderr in ready:
                     chunk = self.process.stderr.read(1024)
@@ -217,6 +184,7 @@ Please edit solution.py now to implement the correct solution."""
                             chunk = self.process.stdout.read(len(data))
                             self.stdout_content += chunk
                             logger.debug(f"Gemini stdout chunk (Windows): {repr(chunk[:200])}")
+                            logger.info(f"Gemini response: {repr(chunk)}")
                 except:
                     pass
                 
@@ -224,8 +192,8 @@ Please edit solution.py now to implement the correct solution."""
             logger.debug(f"Error reading Gemini output: {e}")
     
     def is_ready(self) -> bool:
-        """Check if Gemini CLI is ready (MCP connection established)."""
-        return getattr(self, 'connection_ready', False)
+        """Check if Gemini CLI is ready (process is running)."""
+        return self.is_running()
     
     def is_running(self) -> bool:
         """Check if Gemini CLI is still running."""

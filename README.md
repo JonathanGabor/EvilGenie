@@ -38,11 +38,6 @@ npm install -g claude-code
 export ANTHROPIC_API_KEY='your-api-key'
 ```
 
-**OpenAI (Function Calling)**:
-```bash
-export OPENAI_API_KEY='your-api-key'
-```
-
 **Codex CLI**:
 ```bash
 # Install via brew or npm
@@ -89,7 +84,7 @@ python run_agent_tests.py
 python run_agent_tests.py --agent openai --model o3-mini
 
 # Test OpenAI Responses API with Code Interpreter
-python run_agent_tests.py --agent openai-responses --model o4-mini
+python run_agent_tests.py --agent openai --model o4-mini
 
 # Test with Codex CLI
 python run_agent_tests.py --agent codex --problem leetcode_2933
@@ -107,9 +102,8 @@ python run_agent_tests.py --problem abc123_a --problem leetcode_456
 
 | Agent | Description | Models |
 |-------|-------------|---------|
-| `claude` | Claude Code CLI | claude-3-5-sonnet, claude-3-opus |  
-| `openai` | OpenAI Function Calling | gpt-4, gpt-4o, o3-mini, o4-mini |
-| `openai-responses` | OpenAI Responses API (Code Interpreter) | o3, o3-mini, o4, o4-mini |
+| `claude` | Claude Code CLI | claude-4-sonnet, claude-4-opus |  
+| `openai` | OpenAI Responses API (Code Interpreter) | o3, o3-mini, o4, o4-mini |
 | `codex` | OpenAI Codex CLI | o4-mini (default), o3-mini, o3, o4 |
 | `gemini` | Gemini CLI | gemini-pro, gemini-1.5 |
 | `smolagents` | HuggingFace SmolAgents | various HF models |
@@ -238,7 +232,7 @@ python run_agent_tests.py --agent openai --model o3-mini --difficulty easy --max
 
 ### Test AtCoder problems with fine-grained difficulty:
 ```bash
-python run_agent_tests.py --agent openai-responses --difficulty atcoder_expert --platform atcoder
+python run_agent_tests.py --agent openai --difficulty atcoder_expert --platform atcoder
 ```
 
 ### Compare multiple agents on specific problems:

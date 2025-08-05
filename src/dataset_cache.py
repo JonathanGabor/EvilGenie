@@ -11,7 +11,6 @@ import pickle
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Set
-from datetime import datetime, timedelta
 
 from problems import load_code_generation_dataset, CodeGenerationProblem
 
@@ -39,20 +38,12 @@ class DatasetCache:
         """Get index file path for a release version."""
         return self.cache_dir / f"index_{release_version}.json"
     
-    def _is_cache_valid(self, cache_file: Path, max_age_hours: int = 24) -> bool:
-        """Check if cache file is still valid."""
-        if not cache_file.exists():
-            return False
-        
-        age = datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)
-        return age < timedelta(hours=max_age_hours)
-    
     def _load_from_cache(self, release_version: str) -> Optional[List[CodeGenerationProblem]]:
         """Load problems from cache file."""
         cache_file = self._get_cache_file(release_version)
         
-        if not self._is_cache_valid(cache_file):
-            logger.info(f"Cache for {release_version} is expired or missing")
+        if not cache_file.exists():
+            logger.info(f"Cache for {release_version} is missing")
             return None
         
         try:
@@ -94,7 +85,7 @@ class DatasetCache:
         except Exception as e:
             logger.error(f"Failed to save cache: {e}")
     
-    def get_problems(self, release_version: str = "release_v1", 
+    def get_problems(self, release_version: str = "v6", 
                     force_refresh: bool = False) -> List[CodeGenerationProblem]:
         """Get problems for a release version, using cache when possible.
         
@@ -134,7 +125,7 @@ class DatasetCache:
             raise
     
     def find_problem(self, problem_id: str, 
-                    release_version: str = "release_v1") -> Optional[CodeGenerationProblem]:
+                    release_version: str = "v6") -> Optional[CodeGenerationProblem]:
         """Find a specific problem by ID.
         
         Args:
@@ -146,7 +137,7 @@ class DatasetCache:
         """
         # Try to use index for quick lookup first
         index_file = self._get_index_file(release_version)
-        if index_file.exists() and self._is_cache_valid(index_file):
+        if index_file.exists():
             try:
                 with open(index_file, 'r') as f:
                     index = json.load(f)
@@ -171,7 +162,7 @@ class DatasetCache:
         logger.info(f"Problem {problem_id} not found in {release_version}")
         return None
     
-    def get_available_problems(self, release_version: str = "release_v1") -> Set[str]:
+    def get_available_problems(self, release_version: str = "v6") -> Set[str]:
         """Get set of available problem IDs for a release version.
         
         Args:
@@ -182,7 +173,7 @@ class DatasetCache:
         """
         # Try index file first for efficiency
         index_file = self._get_index_file(release_version)
-        if index_file.exists() and self._is_cache_valid(index_file):
+        if index_file.exists():
             try:
                 with open(index_file, 'r') as f:
                     index = json.load(f)
@@ -234,19 +225,19 @@ class DatasetCache:
 _cache = DatasetCache()
 
 
-def get_cached_problems(release_version: str = "release_v1", 
+def get_cached_problems(release_version: str = "v6", 
                        force_refresh: bool = False) -> List[CodeGenerationProblem]:
     """Get problems using the global cache instance."""
     return _cache.get_problems(release_version, force_refresh)
 
 
 def find_cached_problem(problem_id: str, 
-                       release_version: str = "release_v1") -> Optional[CodeGenerationProblem]:
+                       release_version: str = "v6") -> Optional[CodeGenerationProblem]:
     """Find a problem using the global cache instance."""
     return _cache.find_problem(problem_id, release_version)
 
 
-def get_available_problems(release_version: str = "release_v1") -> Set[str]:
+def get_available_problems(release_version: str = "v6") -> Set[str]:
     """Get available problem IDs using the global cache instance."""
     return _cache.get_available_problems(release_version)
 

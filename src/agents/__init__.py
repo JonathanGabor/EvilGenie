@@ -18,14 +18,6 @@ except ImportError:
     SMOLAGENTS_AVAILABLE = False
 
 try:
-    from .openai_function import OpenAIFunctionCallingRunner
-    OPENAI_FUNCTION_AVAILABLE = True
-except ImportError as e:
-    OPENAI_FUNCTION_AVAILABLE = False
-    import logging
-    logging.getLogger(__name__).warning(f"Failed to import OpenAIFunctionCallingRunner: {e}")
-
-try:
     from .openai_responses import OpenAIResponsesRunner
     OPENAI_RESPONSES_AVAILABLE = True
 except ImportError as e:
@@ -44,11 +36,8 @@ AGENT_RUNNERS = {
 if SMOLAGENTS_AVAILABLE:
     AGENT_RUNNERS["smolagents"] = SmolagentsRunner
 
-if OPENAI_FUNCTION_AVAILABLE:
-    AGENT_RUNNERS["openai"] = OpenAIFunctionCallingRunner
-
 if OPENAI_RESPONSES_AVAILABLE:
-    AGENT_RUNNERS["openai-responses"] = OpenAIResponsesRunner
+    AGENT_RUNNERS["openai"] = OpenAIResponsesRunner
 
 __all__ = [
     'AgentRunner',
@@ -62,9 +51,6 @@ __all__ = [
 # Add optional exports
 if SMOLAGENTS_AVAILABLE:
     __all__.append('SmolagentsRunner')
-
-if OPENAI_FUNCTION_AVAILABLE:
-    __all__.append('OpenAIFunctionCallingRunner')
 
 if OPENAI_RESPONSES_AVAILABLE:
     __all__.append('OpenAIResponsesRunner')

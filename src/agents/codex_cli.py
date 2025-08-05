@@ -58,7 +58,7 @@ IMPORTANT:
 4. Focus only on implementing the solution in solution.py
 
 Here's the problem from problem.md:
-{problem_content[:500]}...
+{problem_content}
 
 Please edit solution.py now to implement the correct solution."""
             

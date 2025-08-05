@@ -43,7 +43,7 @@ def get_problems_from_config(config: Dict[str, Any]) -> List[str]:
     
     # Otherwise use problem filters with caching
     filters = config.get('problem_filters', {})
-    release_version = filters.get('release_version', 'release_v1')
+    release_version = filters.get('release_version', 'v6')
     
     try:
         print(f"Loading dataset {release_version} (using cache if available)...")
@@ -110,7 +110,7 @@ def main():
     
     # Model selection
     parser.add_argument('--model',
-                       help='Model to use (e.g., gpt-4, gpt-4o-mini, o3-mini, claude-3-5-sonnet)')
+                       help='Model to use for OpenAI agent (e.g., gpt-4o, o4-mini, o3-mini)')
     parser.add_argument('--reasoning-effort',
                        choices=['low', 'medium', 'high'],
                        help='Reasoning effort for O3 models (low/medium/high)')
@@ -159,6 +159,14 @@ def main():
     parser.add_argument('--scenario', '-s',
                        help='Use predefined test scenario from config')
     
+    # Parallel execution
+    parser.add_argument('--parallel',
+                       action='store_true',
+                       help='Run agents in parallel')
+    parser.add_argument('--max-workers',
+                       type=int,
+                       help='Maximum number of parallel workers (default: 4)')
+    
     # Output settings
     parser.add_argument('--output', '-o',
                        help='Output file for results')
@@ -183,7 +191,7 @@ def main():
     if args.quick:
         print("🚀 Quick mode: using minimal configuration")
         config = {
-            'timeout': 600,
+            'timeout': 300,
             'cleanup': True,
             'agents': [{'name': 'claude', 'flags': []}],
             'problem_filters': {
@@ -200,7 +208,7 @@ def main():
             
             # Create default config if it doesn't exist
             default_config = {
-                'timeout': 600,
+                'timeout': 300,
                 'cleanup': True,
                 'agents': [{'name': 'claude', 'flags': []}],
                 'problem_filters': {
@@ -241,6 +249,17 @@ def main():
     
     if args.no_cleanup:
         config['cleanup'] = False
+    
+    # Override parallel settings if requested
+    if args.parallel:
+        if 'parallel' not in config:
+            config['parallel'] = {}
+        config['parallel']['enabled'] = True
+        
+    if args.max_workers:
+        if 'parallel' not in config:
+            config['parallel'] = {}
+        config['parallel']['max_workers'] = args.max_workers
     
     if args.verbose:
         config['log_level'] = 'DEBUG'
@@ -291,25 +310,15 @@ def main():
     # Apply model overrides to selected agents (especially important for dynamically created ones)
     if args.model or args.reasoning_effort:
         model_compatible_agents = {'openai'}
-        
-        # Check if any selected agents are incompatible with model selection
-        incompatible_agents = []
-        for agent_config in agents:
-            agent_name = agent_config.get('name', '').lower()
-            if agent_name not in model_compatible_agents:
-                incompatible_agents.append(agent_name)
-        
-        if incompatible_agents:
-            print(f"⚠️  Warning: --model flag not supported by agents: {', '.join(incompatible_agents)}")
-            print(f"   Model selection only works with: {', '.join(sorted(model_compatible_agents))}")
-            if len(incompatible_agents) == len(agents):
-                print("   No compatible agents selected - model flag will be ignored")
+        compatible_found = False
         
         for agent_config in agents:
             agent_name = agent_config.get('name', '').lower()
             if agent_name not in model_compatible_agents:
                 continue  # Skip incompatible agents
-                
+            
+            compatible_found = True
+            
             if args.model:
                 if 'llm_config' not in agent_config:
                     agent_config['llm_config'] = {}
@@ -319,6 +328,17 @@ def main():
                 if 'llm_config' not in agent_config:
                     agent_config['llm_config'] = {}
                 agent_config['llm_config']['reasoning_effort'] = args.reasoning_effort
+        
+        # Only show info message if model was specified
+        if args.model and compatible_found:
+            selected_agents = [a.get('name', '') for a in agents]
+            if 'openai' in selected_agents and len(selected_agents) > 1:
+                # Multiple agents including OpenAI - show info message
+                print(f"ℹ️  Using model '{args.model}' for OpenAI agent")
+            elif 'openai' not in selected_agents:
+                # No compatible agents - show warning
+                print(f"⚠️  Model flag ignored - no OpenAI agent selected")
+                print(f"   Model selection currently only works with: openai")
     
     if not agents:
         print("No agents specified")
@@ -335,7 +355,7 @@ def main():
     elif args.random:
         # Select a random problem
         try:
-            release_version = args.release_version or config.get('problem_filters', {}).get('release_version', 'release_v1')
+            release_version = args.release_version or config.get('problem_filters', {}).get('release_version', 'v6')
             print(f"Selecting random problem from {release_version}...")
             
             # Get available problems (this uses cache/index for efficiency)
@@ -417,17 +437,6 @@ def main():
     
     print()
     
-    # Check if any agent is using O3/O4 reasoning models and increase timeout
-    for agent_config in agents:
-        if agent_config.get('name') == 'openai':
-            model = agent_config.get('llm_config', {}).get('model', 'o4-mini')
-            if model.startswith('o3') or model == 'o3' or model.startswith('o4') or model == 'o4':
-                old_timeout = config.get('timeout', 600)
-                new_timeout = 1800  # 30 minutes for reasoning models
-                config['timeout'] = new_timeout
-                print(f"⚡ Detected reasoning model {model}, increasing timeout from {old_timeout}s to {new_timeout}s")
-                break
-    
     # Initialize tester
     tester = AutomatedTester(config)
     
@@ -445,19 +454,38 @@ def main():
         
         for agent_name, agent_stats in report.get('agents', {}).items():
             print(f"\n{agent_name.upper()}:")
-            print(f"  Tests passed: {agent_stats['tests_passed']}/{agent_stats['total_problems']}")
-            print(f"  Pass rate: {agent_stats['pass_rate']:.1%}")
+            
+            # Check if we have detailed test stats (visible/holdout breakdown)
+            if 'combined_tests' in agent_stats:
+                combined = agent_stats['combined_tests']
+                visible = agent_stats['visible_tests']
+                holdout = agent_stats['holdout_tests']
+                
+                # Show combined stats as primary
+                print(f"  Tests passed: {combined['passed']}/{combined['total']} (combined)")
+                print(f"  Pass rate: {combined['pass_rate']:.1%}")
+                
+                # Show breakdown if holdout tests exist
+                if holdout['total'] > 0:
+                    print(f"    - Visible: {visible['passed']}/{visible['total']} ({visible['pass_rate']:.1%})")
+                    print(f"    - Holdout: {holdout['passed']}/{holdout['total']} ({holdout['pass_rate']:.1%})")
+            else:
+                # Fallback to legacy stats
+                print(f"  Tests passed: {agent_stats['tests_passed']}/{agent_stats['total_problems']}")
+                print(f"  Pass rate: {agent_stats['pass_rate']:.1%}")
+            
             print(f"  Solutions generated: {agent_stats['solutions_generated']}/{agent_stats['total_problems']}")
             print(f"  Generation rate: {agent_stats['generation_rate']:.1%}")
             print(f"  Average runtime: {agent_stats['average_runtime']:.1f}s")
         
         # Save detailed report
-        report_file = Path(config.get('results_file', 'test_results.json')).with_suffix('.report.json')
+        results_file = Path(config.get('results_file', 'test_results.json'))
+        report_file = results_file.with_suffix('.report.json')
         with open(report_file, 'w') as f:
             json.dump(report, f, indent=2)
         
         print(f"\nDetailed report saved to: {report_file}")
-        print(f"Full results saved to: {config.get('results_file', 'test_results.json')}")
+        print(f"Full results saved to: {results_file}")
         
         # Print organized run summary
         print(f"\n{'='*60}")

@@ -249,34 +249,137 @@ You have access to test_cases.json and test.py files for reference if needed."""
                 input_msg = instructions  # Use feedback from previous attempt
             
             # Set timeout based on model type
-            timeout = 600 if self._is_reasoning_model(model) else 120
+            timeout = 300 if self._is_reasoning_model(model) else 120
             
             # Create response
             logger.info(f"Creating response with model {model} (timeout: {timeout}s)")
             
-            response = self.client.responses.create(
-                model=model,
-                instructions=instructions if attempt == 1 else self._create_instructions(problem_content),
-                input=input_msg,
-                tools=[{
+            # Build request parameters
+            request_params = {
+                "model": model,
+                "instructions": instructions if attempt == 1 else self._create_instructions(problem_content),
+                "input": input_msg,
+                "tools": [{
                     "type": "code_interpreter",
                     "container": {
                         "type": "auto",
                         "file_ids": file_ids
                     }
                 }],
-                stream=False,
-                store=True,  # Store for potential retrieval
-                timeout=timeout
-            )
+                "stream": False,
+                "store": True,  # Store for potential retrieval
+                "timeout": timeout
+            }
+            
+            # Add reasoning summary for O3/O4 models
+            if self._is_reasoning_model(model):
+                reasoning_effort = self.config.get('llm_config', {}).get('reasoning_effort', 'medium')
+                request_params["reasoning"] = {
+                    "effort": reasoning_effort,
+                    "summary": "auto"  # Get most detailed summary available
+                }
+                logger.info(f"Added reasoning summary with effort: {reasoning_effort}")
+            
+            response = self.client.responses.create(**request_params)
             
             logger.info(f"Response created: {response.id}")
+            
+            # Extract and save reasoning summaries if present
+            self._save_reasoning_summaries(response, attempt)
+            
             return response
             
         except Exception as e:
             logger.error(f"Failed to create response: {e}")
+            # Save timeout information if it's a timeout error
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                self._save_timeout_info(model, attempt, str(e))
             return None
     
+    def _save_reasoning_summaries(self, response, attempt: int) -> None:
+        """Extract and save reasoning summaries from the response."""
+        try:
+            reasoning_summaries = []
+            
+            # Look for reasoning output items in the response
+            for output_item in response.output:
+                if hasattr(output_item, 'type') and output_item.type == 'reasoning':
+                    if hasattr(output_item, 'summary') and output_item.summary:
+                        for summary_item in output_item.summary:
+                            if hasattr(summary_item, 'type') and summary_item.type == 'summary_text':
+                                reasoning_summaries.append({
+                                    'attempt': attempt,
+                                    'type': 'reasoning_summary',
+                                    'text': summary_item.text,
+                                    'response_id': response.id
+                                })
+            
+            if reasoning_summaries:
+                # Save to workspace
+                reasoning_file = self.workspace_path / f"reasoning_summaries_attempt_{attempt}.json"
+                
+                # Load existing summaries if file exists
+                existing_summaries = []
+                if reasoning_file.exists():
+                    try:
+                        import json
+                        with open(reasoning_file, 'r', encoding='utf-8') as f:
+                            existing_summaries = json.load(f)
+                    except Exception as e:
+                        logger.warning(f"Could not load existing reasoning summaries: {e}")
+                
+                # Append new summaries
+                all_summaries = existing_summaries + reasoning_summaries
+                
+                # Save updated summaries
+                import json
+                with open(reasoning_file, 'w', encoding='utf-8') as f:
+                    json.dump(all_summaries, f, indent=2, ensure_ascii=False)
+                
+                logger.info(f"Saved {len(reasoning_summaries)} reasoning summaries to {reasoning_file}")
+            else:
+                logger.debug("No reasoning summaries found in response")
+                
+        except Exception as e:
+            logger.error(f"Error saving reasoning summaries: {e}")
+    
+    def _save_timeout_info(self, model: str, attempt: int, error_msg: str) -> None:
+        """Save timeout information when requests time out."""
+        try:
+            timeout_info = {
+                'attempt': attempt,
+                'model': model,
+                'type': 'timeout',
+                'error': error_msg,
+                'timestamp': time.time(),
+                'reasoning_effort': self.config.get('llm_config', {}).get('reasoning_effort', 'medium') if self._is_reasoning_model(model) else None
+            }
+            
+            # Save to workspace
+            timeout_file = self.workspace_path / "timeout_info.json"
+            
+            # Load existing timeouts if file exists
+            existing_timeouts = []
+            if timeout_file.exists():
+                try:
+                    import json
+                    with open(timeout_file, 'r', encoding='utf-8') as f:
+                        existing_timeouts = json.load(f)
+                except Exception as e:
+                    logger.warning(f"Could not load existing timeout info: {e}")
+            
+            # Append new timeout
+            all_timeouts = existing_timeouts + [timeout_info]
+            
+            # Save updated timeouts
+            import json
+            with open(timeout_file, 'w', encoding='utf-8') as f:
+                json.dump(all_timeouts, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Saved timeout info to {timeout_file}")
+            
+        except Exception as e:
+            logger.error(f"Error saving timeout info: {e}")
     
     def _download_solution(self, response) -> bool:
         """Extract solution code from the response text."""
