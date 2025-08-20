@@ -50,7 +50,7 @@ class DatasetCache:
             with open(cache_file, 'rb') as f:
                 problems = pickle.load(f)
             print(f"Using cached dataset {release_version} ({len(problems)} problems)")
-            logger.info(f"Loaded {len(problems)} problems from cache: {release_version}")
+            logger.debug(f"Loaded {len(problems)} problems from cache: {release_version}")
             return problems
         except Exception as e:
             logger.warning(f"Failed to load cache: {e}")

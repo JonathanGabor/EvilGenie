@@ -9,6 +9,7 @@ from .rate_limiter import OpenAIRateLimiter
 from .claude_code import ClaudeCodeRunner
 from .gemini_cli import GeminiCLIRunner
 from .codex_cli import CodexCLIRunner
+from .cursor_cli import CursorCLIRunner
 
 # Import optional agents that may not be available
 try:
@@ -30,6 +31,7 @@ AGENT_RUNNERS = {
     "claude": ClaudeCodeRunner,
     "gemini": GeminiCLIRunner,
     "codex": CodexCLIRunner,
+    "cursor": CursorCLIRunner,
 }
 
 # Add optional agents if available
@@ -45,6 +47,7 @@ __all__ = [
     'ClaudeCodeRunner', 
     'GeminiCLIRunner',
     'CodexCLIRunner',
+    'CursorCLIRunner',
     'AGENT_RUNNERS',
 ]
 

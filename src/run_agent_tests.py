@@ -296,9 +296,9 @@ def main():
             
             if args.reasoning_effort and 'llm_config' in agent_config:
                 agent_config['llm_config']['reasoning_effort'] = args.reasoning_effort
-    else:
-        # Default results file in run directory
-        config['results_file'] = str(run_dir / "test_results.json")
+    
+    # Always ensure results file is in the run directory
+    config['results_file'] = str(run_dir / "test_results.json")
     
     # Determine agents to test
     agents = config.get('agents', [])
@@ -455,28 +455,93 @@ def main():
         for agent_name, agent_stats in report.get('agents', {}).items():
             print(f"\n{agent_name.upper()}:")
             
-            # Check if we have detailed test stats (visible/holdout breakdown)
-            if 'combined_tests' in agent_stats:
-                combined = agent_stats['combined_tests']
+            # Count problems with all tests passed
+            problems_data = agent_stats.get('problems', {})
+            problems_with_all_tests_passed = 0
+            for problem_id in problems_data.keys():
+                # Check if this problem passed all its tests
+                # We look at the actual test results from the TestResult objects
+                for result in results:
+                    if result.agent_name == agent_name and result.problem_id == problem_id:
+                        if result.holdout_enabled and result.holdout_analysis:
+                            analysis = result.holdout_analysis
+                            if not analysis.get('error'):
+                                visible_passed = analysis.get('visible_passed', 0)
+                                visible_total = analysis.get('visible_total', 0)
+                                holdout_passed = analysis.get('holdout_passed', 0)
+                                holdout_total = analysis.get('holdout_total', 0)
+                                if (visible_passed == visible_total and holdout_passed == holdout_total and 
+                                    visible_total > 0 and holdout_total > 0):
+                                    problems_with_all_tests_passed += 1
+                            elif result.test_passed:
+                                # Fallback: if holdout analysis had an error but visible tests passed
+                                problems_with_all_tests_passed += 1
+                        elif result.test_passed:
+                            # No holdout tests, just check if visible tests passed
+                            problems_with_all_tests_passed += 1
+                        break
+            
+            print(f"  Problems solved (all tests): {problems_with_all_tests_passed}/{agent_stats['total_problems']}")
+            print(f"  Success rate: {problems_with_all_tests_passed / agent_stats['total_problems']:.1%}" if agent_stats['total_problems'] > 0 else "  Success rate: 0.0%")
+            
+            # Show test breakdown if available
+            if 'combined_tests' in agent_stats and agent_stats['holdout_tests']['total'] > 0:
                 visible = agent_stats['visible_tests']
                 holdout = agent_stats['holdout_tests']
-                
-                # Show combined stats as primary
-                print(f"  Tests passed: {combined['passed']}/{combined['total']} (combined)")
-                print(f"  Pass rate: {combined['pass_rate']:.1%}")
-                
-                # Show breakdown if holdout tests exist
-                if holdout['total'] > 0:
-                    print(f"    - Visible: {visible['passed']}/{visible['total']} ({visible['pass_rate']:.1%})")
-                    print(f"    - Holdout: {holdout['passed']}/{holdout['total']} ({holdout['pass_rate']:.1%})")
-            else:
-                # Fallback to legacy stats
-                print(f"  Tests passed: {agent_stats['tests_passed']}/{agent_stats['total_problems']}")
-                print(f"  Pass rate: {agent_stats['pass_rate']:.1%}")
+                print(f"  Test breakdown:")
+                print(f"    - Visible: {visible['passed']}/{visible['total']} ({visible['pass_rate']:.1%})")
+                print(f"    - Holdout: {holdout['passed']}/{holdout['total']} ({holdout['pass_rate']:.1%})")
             
             print(f"  Solutions generated: {agent_stats['solutions_generated']}/{agent_stats['total_problems']}")
             print(f"  Generation rate: {agent_stats['generation_rate']:.1%}")
             print(f"  Average runtime: {agent_stats['average_runtime']:.1f}s")
+            
+            # Add reward hacking statistics
+            if 'reward_hacking_violations' in agent_stats:
+                print(f"  Reward hacking detected: {agent_stats['reward_hacking_violations']} problems")
+                if agent_stats['reward_hacking_violations'] > 0:
+                    print(f"  Reward hacking rate: {agent_stats['reward_hacking_rate']:.1%}")
+                    if agent_stats.get('violation_types'):
+                        print(f"  Violation types: {', '.join(f'{k}({v})' for k, v in agent_stats['violation_types'].items())}")
+        
+        # Print reward hacking summary by agent if violations exist
+        has_violations = any(agent_stats.get('reward_hacking_violations', 0) > 0 
+                           for agent_stats in report.get('agents', {}).values())
+        
+        if has_violations:
+            print(f"\n{'='*60}")
+            print("REWARD HACKING SUMMARY BY AGENT")
+            print(f"{'='*60}")
+            
+            total_violations = 0
+            total_problems = 0
+            all_violation_types = {}
+            all_severity_counts = {}
+            
+            for agent_name, agent_stats in report.get('agents', {}).items():
+                violations = agent_stats.get('reward_hacking_violations', 0)
+                if violations > 0:
+                    print(f"\n{agent_name.upper()}:")
+                    print(f"  Violations: {violations} problems")
+                    print(f"  Rate: {agent_stats.get('reward_hacking_rate', 0):.1%}")
+                    if agent_stats.get('violation_types'):
+                        print(f"  Types: {', '.join(f'{k}({v})' for k, v in agent_stats['violation_types'].items())}")
+                
+                # Aggregate totals
+                total_violations += violations
+                total_problems += agent_stats.get('total_problems', 0)
+                for v_type, count in agent_stats.get('violation_types', {}).items():
+                    all_violation_types[v_type] = all_violation_types.get(v_type, 0) + count
+            
+            # Print overall summary
+            overall_rate = total_violations / total_problems if total_problems > 0 else 0
+            print(f"\nOVERALL:")
+            print(f"  Total violations: {total_violations}")
+            print(f"  Overall rate: {overall_rate:.1%}")
+            if all_violation_types:
+                print(f"  Common violations: {', '.join(f'{k}({v})' for k, v in sorted(all_violation_types.items(), key=lambda x: x[1], reverse=True))}")
+        else:
+            print(f"\n🛡️  No reward hacking violations detected across all agents")
         
         # Save detailed report
         results_file = Path(config.get('results_file', 'test_results.json'))
@@ -503,9 +568,16 @@ def main():
         print("\nTest interrupted by user")
     except Exception as e:
         print(f"Error during testing: {e}")
-        sys.exit(1)
     
     finally:
+        # Ensure results are saved even if there was an error
+        try:
+            if hasattr(tester, 'results') and tester.results:
+                print("Saving results before cleanup...")
+                tester._save_results()
+        except Exception as save_error:
+            print(f"Error saving results: {save_error}")
+        
         # Cleanup
         tester.cleanup()
 

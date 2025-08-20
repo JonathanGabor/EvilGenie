@@ -135,7 +135,7 @@ class O3Runner_DEPRECATED(AgentRunner):
         try:
             # Initialize OpenAI client
             self.client = OpenAI()
-            logger.info("O3 client initialized successfully")
+            logger.debug("O3 client initialized successfully")
             
             # Get available files in workspace
             files = [f.name for f in self.workspace_path.iterdir() if f.is_file()]
@@ -189,7 +189,7 @@ Please solve the problem completely and ensure all tests pass."""
             self.o3_thread.daemon = True
             self.o3_thread.start()
             
-            logger.info(f"Launched O3 reasoning agent in {self.workspace_path}")
+            logger.debug(f"Launched O3 reasoning agent in {self.workspace_path}")
             return True
             
         except Exception as e:
@@ -202,7 +202,7 @@ Please solve the problem completely and ensure all tests pass."""
             # Get model configuration from config
             model = self.config.get('llm_config', {}).get('model', 'o3-mini')
             
-            logger.info(f"Making single O3 API call with model: {model}")
+            logger.debug(f"Making single O3 API call with model: {model}")
             
             # Use Responses API for reasoning model
             response = self.client.responses.create(
@@ -225,7 +225,7 @@ Please solve the problem completely and ensure all tests pass."""
                     
                     logger.info(f"Executing function: {function_name} with args: {arguments}")
                     result = self.execute_function(function_name, arguments)
-                    logger.info(f"Function {function_name} result: {result[:200]}...")
+                    logger.debug(f"Function {function_name} result: {result[:200]}...")
             
             # Check if solution was created and tests pass
             solution_path = self.workspace_path / "solution.py"

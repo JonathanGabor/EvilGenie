@@ -46,7 +46,7 @@ class WorkspaceManager:
         self.cleanup = cleanup
         self.release_version = release_version
         self.active_workspaces = {}
-        logger.info(f"Workspace manager initialized with base dir: {self.base_dir}, release: {self.release_version}")
+        logger.debug(f"Workspace manager initialized with base dir: {self.base_dir}, release: {self.release_version}")
     
     def create_workspace(self, problem_id: str, agent_name: str, holdout_config: dict = None) -> Optional[Path]:
         """
@@ -66,7 +66,7 @@ class WorkspaceManager:
             workspace_path = self.base_dir / workspace_name
             
             # Use direct function call instead of subprocess
-            logger.info(f"Setting up problem {problem_id} in {workspace_path}")
+            logger.debug(f"Setting up problem {problem_id} in {workspace_path}")
             result = setup_problem_by_id(
                 problem_id=problem_id,
                 output_dir=str(workspace_path.absolute()),
@@ -97,7 +97,7 @@ class WorkspaceManager:
                 "status": "active"
             }
             
-            logger.info(f"Created workspace: {actual_workspace}")
+            logger.debug(f"Created workspace: {actual_workspace}")
             return actual_workspace
             
         except Exception as e:
@@ -122,7 +122,7 @@ class WorkspaceManager:
             workspace_path = self.base_dir / workspace_name
             
             # Use direct function call to setup problem
-            logger.info(f"Setting up base workspace for problem {problem_id} in {workspace_path}")
+            logger.debug(f"Setting up base workspace for problem {problem_id} in {workspace_path}")
             result = setup_problem_by_id(
                 problem_id=problem_id,
                 output_dir=str(workspace_path.absolute()),
@@ -135,8 +135,19 @@ class WorkspaceManager:
                 logger.error(f"Failed to setup base workspace for {problem_id}")
                 return None
             
-            problem_dir, _ = result
+            # Handle new return format with holdout data
+            if len(result) == 3:
+                problem_dir, _, holdout_data = result
+            else:
+                problem_dir, _ = result
+                holdout_data = None
+            
             actual_workspace = Path(problem_dir)
+            
+            # Create holdout files one level above the workspace if available
+            if holdout_data:
+                holdout_dir = actual_workspace.parent
+                self._create_holdout_files(holdout_dir, problem_id, holdout_data)
             
             # Verify the required files exist
             required_files = ["problem.md", "solution.py", "test.py", "test_cases.json"]
@@ -154,12 +165,29 @@ class WorkspaceManager:
                 "workspace_type": "base"
             }
             
-            logger.info(f"Created base workspace: {actual_workspace}")
+            logger.debug(f"Created base workspace: {actual_workspace}")
             return actual_workspace
             
         except Exception as e:
             logger.error(f"Failed to create base workspace: {e}")
             return None
+    
+    def _create_holdout_files(self, holdout_dir: Path, problem_id: str, holdout_data: dict) -> None:
+        """Create holdout files in the specified directory."""
+        try:
+            # Create holdout test cases file
+            holdout_test_file = holdout_dir / f"{problem_id}_test_cases_holdout.json"
+            holdout_test_file.write_text(json.dumps(holdout_data['test_cases'], indent=2))
+            
+            # Create final evaluation script
+            eval_script_file = holdout_dir / f"{problem_id}_final_evaluation.py"
+            eval_script_file.write_text(holdout_data['evaluation_script'])
+            eval_script_file.chmod(0o755)  # Make executable
+            
+            logger.debug(f"Created holdout files for {problem_id} in {holdout_dir}")
+            
+        except Exception as e:
+            logger.error(f"Failed to create holdout files for {problem_id}: {e}")
     
     def duplicate_workspace(self, base_workspace: Path, agent_name: str) -> Optional[Path]:
         """
@@ -191,7 +219,7 @@ class WorkspaceManager:
             agent_workspace = self.base_dir / workspace_name
             
             # Copy the entire base workspace to agent workspace
-            logger.info(f"Duplicating workspace from {base_workspace} to {agent_workspace}")
+            logger.debug(f"Duplicating workspace from {base_workspace} to {agent_workspace}")
             shutil.copytree(base_workspace, agent_workspace)
             
             # Store workspace info for the agent workspace
@@ -204,7 +232,7 @@ class WorkspaceManager:
                 "base_workspace": str(base_workspace)
             }
             
-            logger.info(f"Created agent workspace: {agent_workspace}")
+            logger.debug(f"Created agent workspace: {agent_workspace}")
             return agent_workspace
             
         except Exception as e:
@@ -237,7 +265,7 @@ class WorkspaceManager:
         try:
             if workspace_path.exists():
                 shutil.rmtree(workspace_path)
-                logger.info(f"Cleaned up workspace: {workspace_path}")
+                logger.debug(f"Cleaned up workspace: {workspace_path}")
             
             # Remove from active workspaces
             if workspace_path in self.active_workspaces:
@@ -257,7 +285,7 @@ class WorkspaceManager:
             problem_id: If specified, only clean up agent workspaces for this problem
         """
         if not self.cleanup:
-            logger.info("Cleanup disabled, keeping all workspaces")
+            logger.debug("Cleanup disabled, keeping all workspaces")
             return
         
         workspaces_to_clean = []
@@ -273,7 +301,7 @@ class WorkspaceManager:
     def cleanup_base_workspaces(self) -> None:
         """Clean up all base workspaces."""
         if not self.cleanup:
-            logger.info("Cleanup disabled, keeping all workspaces")
+            logger.debug("Cleanup disabled, keeping all workspaces")
             return
         
         workspaces_to_clean = []
@@ -288,7 +316,7 @@ class WorkspaceManager:
     def cleanup_all(self) -> None:
         """Clean up all active workspaces."""
         if not self.cleanup:
-            logger.info("Cleanup disabled, keeping all workspaces")
+            logger.debug("Cleanup disabled, keeping all workspaces")
             return
             
         workspaces_to_clean = list(self.active_workspaces.keys())
@@ -383,33 +411,48 @@ class WorkspaceMonitor:
         if not content:
             return False
             
-        # Check for signs of actual implementation
-        # Remove comments and whitespace for analysis
-        lines = [line.strip() for line in content.split('\n') 
-                if line.strip() and not line.strip().startswith('#') and not line.strip().startswith('"""')]
+        # First, check for obvious TODO markers - if found, it's definitely a template
+        todo_markers = ['TODO', 'result = "TODO"', 'print("TODO")', 'return "TODO"', 
+                       'TODO: Implement', 'TODO: Replace', '# TODO:']
+        if any(marker in content for marker in todo_markers):
+            return False  # Templates always have TODO markers
+            
+        # Check if solution.py is essentially unchanged from template
+        # Template characteristics:
+        # 1. Has the solve() function with only comments
+        # 2. No actual algorithm implementation
         
-        # Look for TODO markers
-        todo_markers = ['TODO', 'result = "TODO"', 'print("TODO")', 'return "TODO"']
-        has_todos = any(marker in content for marker in todo_markers)
+        # Remove comments and docstrings for analysis
+        import re
+        # Remove docstrings
+        content_no_docstrings = re.sub(r'"""[\s\S]*?"""', '', content)
+        content_no_docstrings = re.sub(r"'''[\s\S]*?'''", '', content_no_docstrings)
+        # Remove comments
+        content_no_comments = re.sub(r'#.*', '', content_no_docstrings)
         
-        # Count meaningful code lines (not just imports, function definitions, or comments)
+        # Split into lines and filter empty ones
+        lines = [line.strip() for line in content_no_comments.split('\n') if line.strip()]
+        
+        # Count meaningful code lines (not just imports, function definitions, or structural code)
         meaningful_lines = []
         for line in lines:
-            # Skip common template patterns
+            # Skip imports, function/class definitions, and structural code
             if (line.startswith('import ') or 
                 line.startswith('from ') or
                 line.startswith('def ') or
                 line.startswith('class ') or
+                line.startswith('@') or  # decorators
+                line == 'pass' or
+                line == 'solve()' or
+                line == 'if __name__ == "__main__":' or
                 line.startswith('"""') or
-                line.startswith("'''") or
-                line in ['if __name__ == "__main__":', 'solve()', 'pass']):
+                line.startswith("'''")):
                 continue
             meaningful_lines.append(line)
         
-        # Consider it a real solution if:
-        # 1. No TODO markers AND has meaningful code, OR
-        # 2. Has substantial meaningful code (>5 lines) even with TODOs (partial implementation)
-        return (not has_todos and len(meaningful_lines) > 0) or len(meaningful_lines) > 5
+        # Require at least 3 meaningful lines of actual code
+        # This filters out templates that only have the structure
+        return len(meaningful_lines) >= 3
     
     def has_test_results(self) -> bool:
         """Check if new test results are available."""

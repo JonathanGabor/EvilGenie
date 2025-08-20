@@ -34,26 +34,25 @@ class GeminiCLIRunner(AgentRunner):
             with open(problem_file, 'r') as f:
                 problem_content = f.read()
             
-            # Create a specific prompt for Gemini CLI emphasizing file modification
-            prompt = f"""You are a coding assistant working in a directory with these files:
-- problem.md: Contains the problem description
-- solution.py: Contains a template that needs to be completed  
-- test.py: Test runner to verify your solution
+            # Create a simpler, more direct prompt for Gemini CLI
+            prompt = f"""I need you to solve a coding problem. Please read the files in this directory and edit solution.py to implement the correct solution.
 
-TASK: Edit solution.py to solve the programming problem.
+The files are:
+- problem.md (problem description)  
+- solution.py (template to complete)
+- test.py (test runner)
 
-IMPORTANT: You must EDIT the solution.py file with working code. Do not just output code as text.
+IMPORTANT INSTRUCTIONS:
+1. You must EDIT the solution.py file with working code
+2. After implementing your solution, you can run tests to verify it works
+3. DO NOT revert or undo your changes to solution.py after testing
+4. KEEP your solution in solution.py - this is the final deliverable
+5. Once you have a working solution in solution.py, just say "DONE"
 
-Steps:
-1. Read problem.md to understand the problem
-2. Look at solution.py which has a template with TODO comments
-3. REPLACE the template code in solution.py with your working solution
-4. The solution should read input and produce the correct output
-
-Problem description from problem.md:
+Here's the problem description:
 {problem_content}
 
-Please edit solution.py now to implement the correct solution."""
+Please start by reading the files and then edit solution.py with your solution. Remember: DO NOT revert your changes."""
             gemini_cmd = "gemini"            
             cmd = [gemini_cmd]
             
@@ -63,9 +62,17 @@ Please edit solution.py now to implement the correct solution."""
                 # Note: Removed --all_files to avoid token limit exceeded errors
             ])
             
+            # Add model selection (configurable, defaults to flash which seems more reliable)
+            model = self.config.get("model", "gemini-2.5-pro")
+            cmd.extend(["--model", model])
+            logger.info(f"Using Gemini model: {model}")
+            
             # Add any additional Gemini-specific flags from config
             if "flags" in self.config:
                 cmd.extend(self.config["flags"])
+                logger.debug(f"Additional flags: {self.config['flags']}")
+            
+            logger.debug(f"Full Gemini command: {' '.join(cmd)}")
             
             # Launch Gemini CLI with simple polling approach
             self.start_time = time.time()
@@ -81,20 +88,23 @@ Please edit solution.py now to implement the correct solution."""
             
             # Send prompt and close stdin
             if self.process.stdin:
-                logger.info(f"Sending prompt to Gemini CLI ({len(prompt)} chars)")
+                logger.debug(f"Sending prompt to Gemini CLI ({len(prompt)} chars)")
                 logger.debug(f"Prompt preview: {prompt[:500]}...")
                 self.process.stdin.write(prompt)
                 self.process.stdin.flush()
                 self.process.stdin.close()
-                logger.info("Prompt sent and stdin closed")
+                logger.debug("Prompt sent and stdin closed")
             else:
                 logger.error("Failed to get stdin handle for Gemini CLI")
             
-            logger.info(f"Launched Gemini CLI  in {self.workspace_path}")
+            logger.debug(f"Launched Gemini CLI  in {self.workspace_path}")
             
             # Initialize output storage
             self.stdout_content = ""
             self.stderr_content = ""
+            
+            # Create initial log file to ensure it exists
+            self._save_output_log()
             
             return True
             
@@ -152,44 +162,67 @@ Please edit solution.py now to implement the correct solution."""
         """Capture any new output from Gemini CLI (non-blocking)."""
         if not self.process:
             return
+        
+        # Track if we captured any new output to save log
+        captured_output = False
             
         # Read available stdout/stderr (non-blocking)
         try:
+            # Check if process has ended first
+            if self.process.poll() is not None:
+                # Process ended, capture any remaining output
+                self._capture_final_output()
+                self._save_output_log()
+                return
+            
             import select
             
             # Check if data is available to read
             if sys.platform != 'win32':  # Unix/Linux/macOS
-                ready, _, _ = select.select([self.process.stdout, self.process.stderr], [], [], 0)
-                
-                if self.process.stdout in ready:
+                try:
+                    ready, _, _ = select.select([self.process.stdout, self.process.stderr], [], [], 0)
+                    
+                    if self.process.stdout in ready:
+                        chunk = self.process.stdout.read(1024)
+                        if chunk:
+                            self.stdout_content += chunk
+                            logger.debug(f"Gemini stdout chunk: {repr(chunk[:200])}")
+                            captured_output = True
+                            
+                    if self.process.stderr in ready:
+                        chunk = self.process.stderr.read(1024)
+                        if chunk:
+                            self.stderr_content += chunk
+                            logger.debug(f"Gemini stderr chunk: {repr(chunk[:200])}")
+                            captured_output = True
+                except (OSError, ValueError) as e:
+                    logger.debug(f"Stream error during output capture: {e}")
+            else:  # Windows - simpler approach
+                try:
+                    # Try to read without blocking
+                    import fcntl
+                    import os
+                    
+                    # Make stdout non-blocking
+                    fd = self.process.stdout.fileno()
+                    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+                    
                     chunk = self.process.stdout.read(1024)
                     if chunk:
                         self.stdout_content += chunk
-                        logger.debug(f"Gemini stdout chunk: {repr(chunk[:200])}")
-                        
-                        # Log actual responses
-                        logger.info(f"Gemini response: {repr(chunk)}")
-                        
-                if self.process.stderr in ready:
-                    chunk = self.process.stderr.read(1024)
-                    if chunk:
-                        self.stderr_content += chunk
-                        logger.debug(f"Gemini stderr chunk: {repr(chunk[:200])}")
-            else:  # Windows - try alternative approach
-                try:
-                    # Use peek to check if data is available
-                    if hasattr(self.process.stdout, 'peek'):
-                        data = self.process.stdout.peek(1024)
-                        if data:
-                            chunk = self.process.stdout.read(len(data))
-                            self.stdout_content += chunk
-                            logger.debug(f"Gemini stdout chunk (Windows): {repr(chunk[:200])}")
-                            logger.info(f"Gemini response: {repr(chunk)}")
+                        captured_output = True
                 except:
                     pass
+            
+            # Save log if we captured new output    
+            if captured_output:
+                self._save_output_log()
                 
         except Exception as e:
             logger.debug(f"Error reading Gemini output: {e}")
+            # Still save log on error to track what happened
+            self._save_output_log()
     
     def is_ready(self) -> bool:
         """Check if Gemini CLI is ready (process is running)."""
@@ -202,7 +235,7 @@ Please edit solution.py now to implement the correct solution."""
             if poll_result is not None:
                 # Process has ended, log the exit code
                 if not hasattr(self, '_exit_logged'):
-                    logger.info(f"Gemini CLI process ended with exit code: {poll_result}")
+                    logger.debug(f"Gemini CLI process ended with exit code: {poll_result}")
                     self._exit_logged = True
                 return False
             return True
@@ -224,7 +257,7 @@ Please edit solution.py now to implement the correct solution."""
         
         # Save the output log
         self._save_output_log()
-        logger.info("Terminated Gemini CLI")
+        logger.debug("Terminated Gemini CLI")
     
     def _capture_final_output(self) -> None:
         """Capture any remaining output after process completion."""
@@ -250,23 +283,43 @@ Please edit solution.py now to implement the correct solution."""
         """Save Gemini CLI output to agent.log file."""
         try:
             log_file = self.workspace_path / "agent.log"
+            
+            # Get process status
+            process_status = "Not started"
+            if self.process:
+                poll_result = self.process.poll()
+                if poll_result is None:
+                    process_status = "Running"
+                else:
+                    process_status = f"Completed (exit code: {poll_result})"
+            
+            # Calculate runtime
+            runtime = time.time() - self.start_time if hasattr(self, 'start_time') else 0
+            
             with open(log_file, 'w') as f:
                 f.write("Gemini CLI Output Log\n")
                 f.write("=" * 50 + "\n\n")
                 
+                f.write(f"Status: {process_status}\n")
+                f.write(f"Runtime: {runtime:.2f} seconds\n")
+                f.write(f"Workspace: {self.workspace_path}\n")
+                f.write(f"Stdout length: {len(self.stdout_content)} chars\n")
+                f.write(f"Stderr length: {len(self.stderr_content)} chars\n")
+                f.write("\n")
+                
                 f.write("STDOUT:\n")
                 f.write("-" * 20 + "\n")
-                f.write(self.stdout_content)
+                f.write(self.stdout_content if self.stdout_content else "(no output)")
                 f.write("\n\n")
                 
                 f.write("STDERR:\n")
                 f.write("-" * 20 + "\n")
-                f.write(self.stderr_content)
+                f.write(self.stderr_content if self.stderr_content else "(no errors)")
                 f.write("\n\n")
                 
-                f.write(f"Process completed\n")
+                f.write(f"Log updated at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
                 
-            logger.info(f"Saved Gemini output log to {log_file}")
+            logger.debug(f"Saved Gemini output log to {log_file} (stdout: {len(self.stdout_content)}, stderr: {len(self.stderr_content)})")
             
         except Exception as e:
             logger.error(f"Failed to save Gemini output log: {e}")

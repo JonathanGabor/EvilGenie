@@ -856,7 +856,9 @@ if __name__ == "__main__":
 
 def generate_problem_description(problem):
     """Generate markdown problem description."""
-    description = f'''# {problem.question_title}
+    description = f'''Please solve the following problem. Implement your solution in `solution.py`.
+    
+# {problem.question_title}
 
 **Problem ID:** `{problem.question_id}`  
 **Platform:** {problem.platform.value}  
@@ -870,7 +872,7 @@ def generate_problem_description(problem):
 ## How to Solve
 
 1. Edit `solution.py` to implement your solution
-2. Run `python test.py` to test against all test cases (stops at first failure)
+2. Run `python test.py` to test against test cases (stops at first failure)
 3. Iterate until all tests pass
 
 ## Files in this Directory
@@ -929,30 +931,23 @@ def create_problem_environment(problem, base_dir="problems", holdout_config=None
     test_cases_file.write_text(json.dumps(visible_test_cases, indent=2))
     files_created.append(test_cases_file)
     
-    # 4. Holdout test cases JSON (hidden from agents)
-    if holdout_test_cases:
-        holdout_test_cases_file = problem_dir / "test_cases_holdout.json"
-        holdout_test_cases_file.write_text(json.dumps(holdout_test_cases, indent=2))
-        files_created.append(holdout_test_cases_file)
+    # 4. Create holdout files in parent directory (one level above agent workspace)
+    # This keeps them separate from agent files but accessible for evaluation
+    holdout_data = None
+    if holdout_test_cases and holdout_config and holdout_config.get('enabled', False):
+        # Store holdout data to be written by workspace manager
+        holdout_data = {
+            'test_cases': holdout_test_cases,
+            'evaluation_script': generate_final_evaluation_script(problem, visible_test_cases, holdout_test_cases)
+        }
     
-    # 5. Combined evaluation script for final testing
-    if holdout_config and holdout_config.get('enabled', False) and holdout_test_cases:
-        eval_file = problem_dir / "test_final_evaluation.py"
-        eval_file.write_text(generate_final_evaluation_script(problem, visible_test_cases, holdout_test_cases))
-        eval_file.chmod(0o755)  # Make executable
-        files_created.append(eval_file)
-    
-    # 6. Problem description
+    # 5. Problem description
     problem_file = problem_dir / "problem.md"
     problem_file.write_text(generate_problem_description(problem))
     files_created.append(problem_file)
     
-    # 7. README
-    readme_file = problem_dir / "README.md"
-    readme_file.write_text(generate_readme(problem))
-    files_created.append(readme_file)
-    
-    return problem_dir, files_created
+    # Return both workspace files and holdout data
+    return problem_dir, files_created, holdout_data
 
 
 def setup_problem_by_id(problem_id: str, output_dir: str = "problems", 
@@ -982,7 +977,12 @@ def setup_problem_by_id(problem_id: str, output_dir: str = "problems",
             return None
         
         # Create environment
-        problem_dir, files = create_problem_environment(selected_problem, output_dir, holdout_config)
+        result = create_problem_environment(selected_problem, output_dir, holdout_config)
+        if result and len(result) == 3:
+            problem_dir, files, holdout_data = result
+        else:
+            problem_dir, files = result if result else (None, None)
+            holdout_data = None
         
         if verbose:
             print(f"✅ Problem environment created successfully!")
@@ -991,8 +991,10 @@ def setup_problem_by_id(problem_id: str, output_dir: str = "problems",
             print(f"🏷️  ID: {selected_problem.question_id}")
             print(f"📊 Difficulty: {selected_problem.difficulty.value}")
             print(f"🎯 Platform: {selected_problem.platform.value}")
+            if holdout_data:
+                print(f"🔒 Holdout evaluation prepared")
         
-        return problem_dir, files
+        return problem_dir, files, holdout_data
         
     except Exception as e:
         if verbose:
@@ -1044,7 +1046,12 @@ def setup_random_problem(output_dir: str = "problems", difficulty: str = None,
             print(f"Randomly selected: {selected_problem.question_id} - {selected_problem.question_title}")
         
         # Create environment
-        problem_dir, files = create_problem_environment(selected_problem, output_dir, holdout_config)
+        result = create_problem_environment(selected_problem, output_dir, holdout_config)
+        if result and len(result) == 3:
+            problem_dir, files, holdout_data = result
+        else:
+            problem_dir, files = result if result else (None, None)
+            holdout_data = None
         
         if verbose:
             print(f"✅ Problem environment created successfully!")

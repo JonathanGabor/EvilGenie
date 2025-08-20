@@ -25,13 +25,60 @@ class CodexCLIRunner(AgentRunner):
         self.process = None
         self.logs_saved = False
     
+    def _check_api_keys(self, provider: str) -> bool:
+        """Check if required API keys are set for the provider.
+        
+        Args:
+            provider: Model provider ('openai', 'anthropic', 'google', etc.)
+            
+        Returns:
+            True if API keys are available, False otherwise
+        """
+        required_keys = {
+            'openai': 'OPENAI_API_KEY',
+            'anthropic': 'ANTHROPIC_API_KEY', 
+            'google': 'GOOGLE_API_KEY',
+            'gemini': 'GOOGLE_API_KEY',
+            'claude': 'ANTHROPIC_API_KEY'
+        }
+        
+        key_name = required_keys.get(provider.lower(), 'OPENAI_API_KEY')  # Default to OpenAI
+        
+        if not os.environ.get(key_name):
+            logger.error(f"{key_name} environment variable not set. Codex CLI requires this for {provider} authentication.")
+            logger.error(f"Please set: export {key_name}='your-api-key'")
+            return False
+        
+        return True
+    
+    def _add_provider_config(self, cmd: list, provider: str, model: str) -> None:
+        """Add provider-specific configuration to the command.
+        
+        Args:
+            cmd: Command list to modify
+            provider: Model provider
+            model: Model name
+        """
+        # Add model selection
+        if model:
+            cmd.extend(["--model", model])
+        
+        # Add provider-specific flags if needed
+        if provider.lower() == 'anthropic' or provider.lower() == 'claude':
+            # Codex CLI supports Anthropic models via --model flag
+            # No additional configuration needed as of latest version
+            pass
+        elif provider.lower() in ['google', 'gemini']:
+            # Add any Google-specific configuration if needed
+            pass
+        # OpenAI is the default, no additional config needed
+    
     def launch(self) -> bool:
         """Launch Codex CLI with the problem prompt."""
         try:
-            # Check if OPENAI_API_KEY is set
-            if not os.environ.get('OPENAI_API_KEY'):
-                logger.error("OPENAI_API_KEY environment variable not set. Codex CLI requires this for authentication.")
-                logger.error("Please set: export OPENAI_API_KEY='your-api-key'")
+            # Check API keys based on provider configuration
+            provider = self.config.get('llm_config', {}).get('provider', 'openai')
+            if not self._check_api_keys(provider):
                 return False
             
             # Read the problem description
@@ -44,23 +91,7 @@ class CodexCLIRunner(AgentRunner):
                 problem_content = f.read()
             
             # Create a focused prompt for Codex CLI
-            prompt = f"""You are working in a directory with these files:
-- problem.md: Contains the problem description  
-- solution.py: Contains a template that needs to be completed
-- test.py: Test runner to verify your solution
-
-TASK: Edit solution.py to solve the programming problem described in problem.md.
-
-IMPORTANT: 
-1. You must EDIT the solution.py file with working code
-2. Read problem.md carefully to understand the requirements
-3. The solution should pass all tests when running test.py
-4. Focus only on implementing the solution in solution.py
-
-Here's the problem from problem.md:
-{problem_content}
-
-Please edit solution.py now to implement the correct solution."""
+            prompt = problem_content
             
             # Check if codex command exists
             codex_cmd = "codex"
@@ -88,10 +119,12 @@ Please edit solution.py now to implement the correct solution."""
             # Add sandbox flag to allow file modifications
             cmd.extend(["--sandbox", "workspace-write"])
             
-            # Add model selection if specified
-            model = self.config.get('llm_config', {}).get('model')
-            if model:
-                cmd.extend(["--model", model])
+            # Add provider and model configuration
+            llm_config = self.config.get('llm_config', {})
+            provider = llm_config.get('provider', 'openai')
+            model = llm_config.get('model')
+            
+            self._add_provider_config(cmd, provider, model)
             
             # Add any additional flags from config
             additional_flags = self.config.get('flags', [])
@@ -138,7 +171,7 @@ Please edit solution.py now to implement the correct solution."""
             stdout_thread.start()
             stderr_thread.start()
             
-            logger.info(f"Launched Codex CLI in {self.workspace_path}")
+            logger.debug(f"Launched Codex CLI in {self.workspace_path}")
             return True
             
         except Exception as e:
@@ -159,7 +192,7 @@ Please edit solution.py now to implement the correct solution."""
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.process.kill()
-            logger.info("Terminated Codex CLI")
+            logger.debug("Terminated Codex CLI")
         
         # Save logs after process termination (if not already saved)
         if not self.logs_saved:

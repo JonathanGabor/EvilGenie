@@ -45,7 +45,7 @@ class TestResult:
     reward_hacking_summary: Optional[Dict[str, Any]] = None
     reward_hacking_violations: Optional[List[Dict[str, Any]]] = None
     # Holdout test analysis fields
-    holdout_enabled: bool = False
+    holdout_enabled: bool = True
     holdout_analysis: Optional[Dict[str, Any]] = None
     potential_overfitting: bool = False
     
@@ -201,7 +201,7 @@ class AutomatedTester:
                     agent_runner.update_output()
                 
                 if hasattr(agent_runner, 'is_ready') and agent_runner.is_ready():
-                    logger.info(f"Agent {agent_name} is ready after {time.time() - connection_start:.1f}s")
+                    logger.debug(f"Agent {agent_name} is ready after {time.time() - connection_start:.1f}s")
                     break
                     
                 if not agent_runner.is_running():
@@ -241,7 +241,7 @@ class AutomatedTester:
                     if hasattr(agent_runner, 'stdout_content'):
                         stdout_len = len(agent_runner.stdout_content)
                         stderr_len = len(agent_runner.stderr_content) if hasattr(agent_runner, 'stderr_content') else 0
-                        logger.info(f"Output captured: {stdout_len} stdout chars, {stderr_len} stderr chars")
+                        logger.debug(f"Output captured: {stdout_len} stdout chars, {stderr_len} stderr chars")
                     last_status_log = time.time()
                 
                 # Check if agent is still running
@@ -261,7 +261,7 @@ class AutomatedTester:
             
             # Final check for solution changes after agent completes
             if not solution_found and monitor.has_solution_changed():
-                logger.info("Solution file updated after agent completion")
+                logger.debug("Solution file updated after agent completion")
                 solution_found = True
                 solution_content = monitor.get_solution_content()
             
@@ -293,9 +293,9 @@ class AutomatedTester:
             # Run holdout test evaluation if enabled
             holdout_analysis = None
             potential_overfitting = False
-            if holdout_config.get('enabled', False) and solution_found:
+            if holdout_config.get('enabled', True) and solution_found:
                 logger.info("Running final evaluation with holdout test cases...")
-                holdout_analysis = self._run_holdout_evaluation(workspace_path)
+                holdout_analysis = self._run_holdout_evaluation(workspace_path, problem_id)
                 
                 if holdout_analysis:
                     # Check for potential overfitting
@@ -330,7 +330,7 @@ class AutomatedTester:
                 reward_hacking_detected=reward_hacking_summary['has_violations'],
                 reward_hacking_summary=reward_hacking_summary,
                 reward_hacking_violations=reward_hacking_summary.get('violations', []),
-                holdout_enabled=holdout_config.get('enabled', False) and holdout_analysis is not None,
+                holdout_enabled=holdout_config.get('enabled', True) and holdout_analysis is not None,
                 holdout_analysis=holdout_analysis,
                 potential_overfitting=potential_overfitting
             )
@@ -365,17 +365,19 @@ class AutomatedTester:
                 reward_hacking_detected=reward_hacking_detected,
                 reward_hacking_summary=reward_hacking_summary,
                 reward_hacking_violations=reward_hacking_violations,
-                holdout_enabled=False,
+                holdout_enabled=True,
                 holdout_analysis=None,
                 potential_overfitting=False
             )
     
-    def _run_holdout_evaluation(self, workspace_path: Path) -> Optional[Dict[str, Any]]:
+    def _run_holdout_evaluation(self, workspace_path: Path, problem_id: str = None) -> Optional[Dict[str, Any]]:
         """
-        Run the final evaluation script that tests both visible and holdout test cases.
+        Run holdout evaluation using pre-generated holdout files.
+        This avoids reloading the dataset and uses files created during workspace setup.
         
         Args:
             workspace_path: Path to the workspace directory
+            problem_id: Problem ID to fetch holdout tests for
             
         Returns:
             Dictionary with evaluation results or None if failed
@@ -384,22 +386,64 @@ class AutomatedTester:
             import subprocess
             import json
             
-            # Check if final evaluation script exists
-            eval_script = workspace_path / "test_final_evaluation.py"
-            if not eval_script.exists():
-                logger.warning("Final evaluation script not found - holdout evaluation disabled for this problem")
+            # Get holdout config
+            holdout_config = self.config.get('holdout', {})
+            if not holdout_config.get('enabled', True):
+                logger.debug("Holdout evaluation disabled in config")
                 return None
             
-            logger.info("Running final evaluation script...")
+            # Extract problem_id from workspace path if not provided
+            if not problem_id:
+                problem_id = workspace_path.name.split('_')[1] if '_' in workspace_path.name else None
+                if not problem_id:
+                    logger.warning("Could not determine problem_id for holdout evaluation")
+                    return None
             
-            # Run the evaluation script using relative path to avoid path issues
+            # Look for pre-generated holdout evaluation script in base workspace
+            workspaces_dir = workspace_path.parent
+            base_workspace_pattern = f"base_{problem_id}_*"
+            base_workspaces = list(workspaces_dir.glob(base_workspace_pattern))
+            
+            if not base_workspaces:
+                logger.debug(f"No base workspace found for {problem_id}")
+                return None
+                
+            base_workspace = base_workspaces[0]
+            eval_script = base_workspace / f"{problem_id}_final_evaluation.py"
+            
+            if not eval_script.exists():
+                logger.debug(f"No holdout evaluation script found for {problem_id} in {base_workspace}")
+                return None
+            
+            logger.info(f"Running holdout evaluation for {problem_id}...")
+            
+            # Copy holdout test files to workspace if they don't exist
+            holdout_test_file = base_workspace / f"{problem_id}_test_cases_holdout.json"
+            agent_holdout_file = workspace_path / "test_cases_holdout.json"
+            
+            if holdout_test_file.exists() and not agent_holdout_file.exists():
+                import shutil
+                shutil.copy2(holdout_test_file, agent_holdout_file)
+                logger.debug(f"Copied holdout test file to workspace")
+            
+            # Copy the evaluation script to workspace temporarily for execution
+            temp_script = workspace_path / "temp_final_evaluation.py" 
+            temp_script.write_text(eval_script.read_text())
+            temp_script.chmod(0o755)
+            
+            # Run the evaluation script
             result = subprocess.run(
-                ["python", "test_final_evaluation.py"],
+                ["python", temp_script.name],
                 cwd=str(workspace_path),
                 capture_output=True,
-                text=True,
-                timeout=30  # 30 second timeout for evaluation
+                text=True
             )
+            
+            # Clean up temporary evaluation script
+            try:
+                temp_script.unlink()
+            except:
+                pass  # Ignore cleanup errors
             
             # Try to load the results from the JSON file created by the script
             results_file = workspace_path / "evaluation_results.json"
@@ -444,13 +488,13 @@ class AutomatedTester:
         unique_problems = list(set(problems))  # Remove duplicates
         base_workspaces = {}
         
-        logger.info(f"Preparing base workspaces for {len(unique_problems)} unique problems...")
+        logger.debug(f"Preparing base workspaces for {len(unique_problems)} unique problems...")
         
         # Get holdout configuration once for all problems
         holdout_config = self.config.get('holdout_test_cases', {})
         
         for i, problem_id in enumerate(unique_problems):
-            logger.info(f"Creating base workspace {i+1}/{len(unique_problems)}: {problem_id}")
+            logger.debug(f"Creating base workspace {i+1}/{len(unique_problems)}: {problem_id}")
             
             base_workspace = self.workspace_manager.create_base_workspace(
                 problem_id=problem_id,
@@ -458,14 +502,14 @@ class AutomatedTester:
             )
             
             if base_workspace:
-                logger.info(f"✅ Base workspace created for {problem_id}: {base_workspace}")
+                logger.debug(f"✅ Base workspace created for {problem_id}: {base_workspace}")
             else:
                 logger.error(f"❌ Failed to create base workspace for {problem_id}")
             
             base_workspaces[problem_id] = base_workspace
         
         successful_count = sum(1 for ws in base_workspaces.values() if ws is not None)
-        logger.info(f"Base workspace preparation complete: {successful_count}/{len(unique_problems)} successful")
+        logger.debug(f"Base workspace preparation complete: {successful_count}/{len(unique_problems)} successful")
         
         return base_workspaces
     
@@ -496,12 +540,10 @@ class AutomatedTester:
         total_tests = len(problems) * len(agents)
         completed = 0
         
-        # Create all test tasks with base workspaces
-        test_tasks = []
-        for problem_id in problems:
-            base_workspace = base_workspaces.get(problem_id)
-            for agent_config in agents:
-                test_tasks.append((problem_id, agent_config, base_workspace))
+        # Create all test tasks with base workspaces using improved load balancing
+        test_tasks = self._create_balanced_task_list(problems, agents, base_workspaces)
+        
+        logger.debug(f"Created {len(test_tasks)} tasks with improved load balancing")
         
         # Use ThreadPoolExecutor for parallel execution
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -560,12 +602,27 @@ class AutomatedTester:
                     # Save intermediate results (thread-safe)
                     self._save_results()
                     
-                    # Show progress with active tasks
+                    # Show progress with active tasks and agent instance counts
                     if active_tasks and len(active_tasks) <= 5:
                         active_list = [f"{p}:{a}" for p, a in list(active_tasks)[:5]]
                         logger.info(f"Completed {completed}/{total_tests}: {problem_id} with {agent_name} | Active: {', '.join(active_list)}")
                     else:
-                        logger.info(f"Completed {completed}/{total_tests}: {problem_id} with {agent_name} | {len(active_tasks)} active")
+                        # Count concurrent instances of each agent
+                        agent_counts = {}
+                        for _, a in active_tasks:
+                            agent_counts[a] = agent_counts.get(a, 0) + 1
+                        
+                        # Calculate load balance score (lower is better)
+                        if agent_counts:
+                            max_count = max(agent_counts.values())
+                            min_count = min(agent_counts.values())
+                            balance_ratio = min_count / max_count if max_count > 0 else 1.0
+                            balance_indicator = "⚖️" if balance_ratio > 0.7 else "⚠️" if balance_ratio > 0.4 else "🔴"
+                        else:
+                            balance_indicator = "⚖️"
+                        
+                        agent_summary = [f"{agent}({count})" for agent, count in sorted(agent_counts.items())]
+                        logger.info(f"Completed {completed}/{total_tests}: {problem_id} with {agent_name} | {balance_indicator} Active: {', '.join(agent_summary)} ({len(active_tasks)} total)")
                     
                 except Exception as e:
                     logger.error(f"Error testing {problem_id} with {agent_name}: {e}")
@@ -590,10 +647,80 @@ class AutomatedTester:
                         completed += 1
         
         # Clean up base workspaces after all parallel testing is complete
-        logger.info("Cleaning up base workspaces...")
+        logger.debug("Cleaning up base workspaces...")
         self.workspace_manager.cleanup_base_workspaces()
         
+        # Final save of all results
+        logger.info("Saving final results...")
+        self._save_results()
+        
         return results
+    
+    def _create_balanced_task_list(self, problems: List[str], agents: List[Dict[str, Any]], 
+                                 base_workspaces: Dict[str, Path]) -> List[tuple]:
+        """
+        Create a balanced task list for better load distribution across workers.
+        Uses round-robin scheduling to ensure agents are evenly distributed.
+        """
+        import random
+        from collections import deque
+        
+        parallel_config = self.config.get('parallel', {})
+        balancing_strategy = parallel_config.get('load_balancing_strategy', 'round_robin')
+        
+        if balancing_strategy == 'round_robin':
+            # Round-robin distribution: alternate agents for consecutive tasks
+            tasks = []
+            agent_queue = deque(agents)
+            
+            for problem_id in problems:
+                base_workspace = base_workspaces.get(problem_id)
+                # Rotate through agents for this problem
+                current_agents = list(agent_queue)
+                for agent_config in current_agents:
+                    tasks.append((problem_id, agent_config, base_workspace))
+                # Rotate the agent queue for better distribution across problems
+                agent_queue.rotate(1)
+            
+            logger.debug("Using round-robin load balancing strategy")
+            
+        elif balancing_strategy == 'interleaved':
+            # Interleaved distribution: spread agents evenly across all tasks
+            all_combinations = []
+            for problem_id in problems:
+                base_workspace = base_workspaces.get(problem_id)
+                for agent_config in agents:
+                    all_combinations.append((problem_id, agent_config, base_workspace))
+            
+            # Group by agent and interleave
+            agent_tasks = {agent['name']: [] for agent in agents}
+            for problem_id, agent_config, base_workspace in all_combinations:
+                agent_tasks[agent_config['name']].append((problem_id, agent_config, base_workspace))
+            
+            # Interleave tasks from different agents
+            tasks = []
+            max_tasks_per_agent = max(len(task_list) for task_list in agent_tasks.values())
+            
+            for i in range(max_tasks_per_agent):
+                for agent_name in agent_tasks:
+                    if i < len(agent_tasks[agent_name]):
+                        tasks.append(agent_tasks[agent_name][i])
+            
+            logger.debug("Using interleaved load balancing strategy")
+            
+        else:
+            # Fallback: simple creation with optional shuffling
+            tasks = []
+            for problem_id in problems:
+                base_workspace = base_workspaces.get(problem_id)
+                for agent_config in agents:
+                    tasks.append((problem_id, agent_config, base_workspace))
+            
+            if parallel_config.get('shuffle_tasks', True):
+                random.shuffle(tasks)
+                logger.debug("Using shuffled load balancing strategy")
+        
+        return tasks
     
     def test_batch(self, problems: List[str], agents: List[Dict[str, Any]]) -> List[TestResult]:
         """
@@ -610,9 +737,19 @@ class AutomatedTester:
         parallel_config = self.config.get('parallel', {})
         if parallel_config.get('enabled', False):
             max_workers = parallel_config.get('max_workers', 4)
-            # Limit workers to number of agents to avoid waste
-            max_workers = min(max_workers, len(agents))
-            logger.info(f"Running tests in parallel with {max_workers} workers")
+            
+            # New behavior: allow multiple copies of same agent if beneficial
+            allow_agent_duplication = parallel_config.get('allow_agent_duplication', True)
+            if not allow_agent_duplication:
+                # Legacy behavior: limit workers to number of unique agents
+                max_workers = min(max_workers, len(agents))
+                logger.info(f"Running tests in parallel with {max_workers} workers (legacy mode)")
+            else:
+                # New behavior: use all available workers for better utilization
+                total_tasks = len(problems) * len(agents)
+                max_workers = min(max_workers, total_tasks)  # Don't exceed total tasks
+                logger.info(f"Running tests in parallel with {max_workers} workers (allowing agent duplication)")
+            
             return self.test_batch_parallel(problems, agents, max_workers)
         
         # Two-phase execution: prepare workspaces first, then run agents
@@ -676,11 +813,20 @@ class AutomatedTester:
         logger.info("Cleaning up base workspaces...")
         self.workspace_manager.cleanup_base_workspaces()
         
+        # Final save of all results
+        logger.info("Saving final results...")
+        self._save_results()
+        
         return results
     
     def _save_results(self) -> None:
         """Save current results to file."""
         results_file = Path(self.config.get('results_file', 'test_results.json'))
+        
+        # Debug: Show what we're trying to save
+        logger.debug(f"Saving results to: {results_file.absolute()}")
+        logger.debug(f"Number of results to save: {len(self.results)}")
+        
         results_file.parent.mkdir(parents=True, exist_ok=True)
         
         with self.results_lock:
@@ -688,6 +834,8 @@ class AutomatedTester:
         
         with open(results_file, 'w') as f:
             json.dump(results_to_save, f, indent=2)
+            
+        logger.info(f"Results saved successfully to {results_file.absolute()}")
     
     def _parse_test_case_counts(self, test_results: Dict[str, Any]) -> Tuple[int, int]:
         """

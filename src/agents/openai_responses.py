@@ -50,7 +50,7 @@ class OpenAIResponsesRunner(AgentRunner):
                 timeout=900.0,  # 15 minutes default timeout
                 max_retries=0   # We handle retries ourselves
             )
-            logger.info("OpenAI client initialized successfully")
+            logger.debug("OpenAI client initialized successfully")
             
             # Start the agent in a separate thread
             self.response_thread = threading.Thread(target=self._run_agent)
@@ -59,7 +59,7 @@ class OpenAIResponsesRunner(AgentRunner):
             self.start_time = time.time()
             self.is_active = True
             
-            logger.info(f"Launched OpenAI Responses agent in {self.workspace_path}")
+            logger.debug(f"Launched OpenAI Responses agent in {self.workspace_path}")
             return True
             
         except Exception as e:
@@ -121,10 +121,10 @@ class OpenAIResponsesRunner(AgentRunner):
                 
                 # Run local tests
                 tests_passed, test_output = self._run_local_tests()
-                logger.info(f"Local tests result: {'PASSED' if tests_passed else 'FAILED'}")
+                logger.debug(f"Local tests result: {'PASSED' if tests_passed else 'FAILED'}")
                 
                 if tests_passed:
-                    logger.info("Solution passes all tests - completing successfully")
+                    logger.debug("Solution passes all tests - completing successfully")
                     self.solution_downloaded = True
                     break
                 else:
@@ -151,7 +151,8 @@ Please analyze the test failures and create a corrected solution. Make sure to:
     def _is_reasoning_model(self, model: str) -> bool:
         """Check if the model is a reasoning model (O3/O4)."""
         return (model.startswith('o3-') or model == 'o3' or 
-                model.startswith('o4-') or model == 'o4')
+                model.startswith('o4-') or model == 'o4'
+                or model.startswith('gpt-5') or model == 'gpt-5')
     
     def _detect_problem_type(self, problem_content: str) -> str:
         """Detect if this is a LeetCode problem or competitive programming."""
@@ -224,7 +225,7 @@ The solution must handle input/output correctly and pass all test cases."""
                             purpose="assistants"
                         )
                         file_ids.append(file_obj.id)
-                        logger.info(f"Uploaded {filename} (id: {file_obj.id})")
+                        logger.debug(f"Uploaded {filename} (id: {file_obj.id})")
                 else:
                     logger.warning(f"File {filename} not found")
             
@@ -240,7 +241,7 @@ The solution must handle input/output correctly and pass all test cases."""
         try:
             # Prepare input message
             if attempt == 1:
-                input_msg = f"""Solve this problem:
+                input_msg = f"""
 
 {problem_content}
 
@@ -278,11 +279,11 @@ You have access to test_cases.json and test.py files for reference if needed."""
                     "effort": reasoning_effort,
                     "summary": "auto"  # Get most detailed summary available
                 }
-                logger.info(f"Added reasoning summary with effort: {reasoning_effort}")
+                logger.debug(f"Added reasoning summary with effort: {reasoning_effort}")
             
             response = self.client.responses.create(**request_params)
             
-            logger.info(f"Response created: {response.id}")
+            logger.debug(f"Response created: {response.id}")
             
             # Extract and save reasoning summaries if present
             self._save_reasoning_summaries(response, attempt)
@@ -376,7 +377,7 @@ You have access to test_cases.json and test.py files for reference if needed."""
             with open(timeout_file, 'w', encoding='utf-8') as f:
                 json.dump(all_timeouts, f, indent=2, ensure_ascii=False)
             
-            logger.info(f"Saved timeout info to {timeout_file}")
+            logger.debug(f"Saved timeout info to {timeout_file}")
             
         except Exception as e:
             logger.error(f"Error saving timeout info: {e}")
@@ -434,7 +435,7 @@ You have access to test_cases.json and test.py files for reference if needed."""
             with open(solution_path, 'w', encoding='utf-8') as f:
                 f.write(solution_code)
             
-            logger.info(f"Successfully extracted solution code to {solution_path}")
+            logger.debug(f"Successfully extracted solution code to {solution_path}")
             return True
             
         except Exception as e:
@@ -482,4 +483,4 @@ You have access to test_cases.json and test.py files for reference if needed."""
         if self.response_thread and self.response_thread.is_alive():
             # Give thread time to finish gracefully
             self.response_thread.join(timeout=5.0)
-        logger.info("Terminated OpenAI Responses agent")
+        logger.debug("Terminated OpenAI Responses agent")

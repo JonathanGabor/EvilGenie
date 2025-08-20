@@ -43,20 +43,7 @@ class ClaudeCodeRunner(AgentRunner):
                 problem_content = f.read()
             
             # Create a comprehensive prompt for Claude Code
-            prompt = f"""I need to solve this coding problem. Please:
-
-1. Read and understand the problem description below
-2. Examine the current solution.py file (it has a template)
-3. Implement the correct solution in solution.py
-4. Run test.py to verify the solution works
-5. If tests fail, debug and fix the solution
-6. Continue until all tests pass
-
-Here's the problem:
-
-{problem_content}
-
-"""
+            prompt = problem_content
             
             if CLAUDE_SDK_AVAILABLE:
                 # Use Python SDK in a separate thread
@@ -64,7 +51,7 @@ Here's the problem:
                 self.start_time = time.time()
                 self.sdk_thread = threading.Thread(target=self._run_claude_sdk_sync, args=(prompt,))
                 self.sdk_thread.start()
-                logger.info(f"Launched Claude Code SDK in {self.workspace_path}")
+                logger.debug(f"Launched Claude Code SDK in {self.workspace_path}")
                 return True
             else:
                 # Fall back to subprocess approach
@@ -86,9 +73,9 @@ Here's the problem:
         """Run Claude Code using the Python SDK."""
         try:
             options = ClaudeCodeOptions(
-                max_turns=30,  # Increased from 10 to allow complex problem solving
                 cwd=self.workspace_path,
-                permission_mode="bypassPermissions"  # Auto-accept all tool permissions (edits, bash, etc.)
+                permission_mode="bypassPermissions",  # Auto-accept all tool permissions (edits, bash, etc.)
+                model="claude-opus-4-1-20250805"
             )
             
             async for message in query(prompt=prompt, options=options):
@@ -96,7 +83,7 @@ Here's the problem:
                 logger.debug(f"Claude Code message: {message}")
             
             self.is_complete = True
-            logger.info("Claude Code SDK completed")
+            logger.debug("Claude Code SDK completed")
             
             # Save the full conversation log
             self._save_conversation_log()
@@ -145,7 +132,7 @@ Here's the problem:
                 text=True
             )
             
-            logger.info(f"Launched Claude Code subprocess in {self.workspace_path}")
+            logger.debug(f"Launched Claude Code subprocess in {self.workspace_path}")
             return True
             
         except Exception as e:
@@ -167,11 +154,11 @@ Here's the problem:
                 # Note: We can't really terminate the thread safely, 
                 # but we can mark it as complete
                 self.is_complete = True
-                logger.info("Marked Claude Code SDK as complete")
+                logger.debug("Marked Claude Code SDK as complete")
         elif hasattr(self, 'process') and self.process and self.is_running():
             self.process.terminate()
             try:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.process.kill()
-            logger.info("Terminated Claude Code subprocess")
+            logger.debug("Terminated Claude Code subprocess")
