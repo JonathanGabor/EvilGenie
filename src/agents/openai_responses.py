@@ -10,6 +10,7 @@ import subprocess
 from typing import Dict, Any, Optional, Tuple
 
 from .base import AgentRunner
+from env_utils import build_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -460,7 +461,8 @@ You have access to test_cases.json and test.py files for reference if needed."""
                 cwd=str(self.workspace_path),
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
+                env=build_subprocess_env()
             )
             
             if result.returncode == 0:

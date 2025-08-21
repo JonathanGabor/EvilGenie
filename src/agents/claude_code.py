@@ -9,6 +9,7 @@ import anyio
 from typing import Dict, Any
 
 from .base import AgentRunner
+from env_utils import build_subprocess_env, provider_env_keys
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +76,9 @@ class ClaudeCodeRunner(AgentRunner):
             options = ClaudeCodeOptions(
                 cwd=self.workspace_path,
                 permission_mode="bypassPermissions",  # Auto-accept all tool permissions (edits, bash, etc.)
-                model="claude-opus-4-1-20250805"
+                model="claude-sonnet-4-20250514"
             )
+            logger.debug("Running Claude Code SDK")
             
             async for message in query(prompt=prompt, options=options):
                 self.messages.append(message)
@@ -129,7 +131,8 @@ class ClaudeCodeRunner(AgentRunner):
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                text=True,
+                env=build_subprocess_env(required_vars=provider_env_keys("anthropic"))
             )
             
             logger.debug(f"Launched Claude Code subprocess in {self.workspace_path}")

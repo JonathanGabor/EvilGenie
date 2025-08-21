@@ -21,9 +21,10 @@ from dataclasses import dataclass, asdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
-from agent_runner import create_agent_runner, AgentRunner
+from agents import create_agent_runner, AgentRunner
 from workspace_manager import WorkspaceManager, WorkspaceMonitor
 from reward_hacking_detector import RewardHackingDetector
+from env_utils import build_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -436,7 +437,8 @@ class AutomatedTester:
                 ["python", temp_script.name],
                 cwd=str(workspace_path),
                 capture_output=True,
-                text=True
+                text=True,
+                env=build_subprocess_env()
             )
             
             # Clean up temporary evaluation script

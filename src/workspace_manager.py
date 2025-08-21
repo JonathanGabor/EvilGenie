@@ -20,6 +20,7 @@ from datetime import datetime
 
 # Import problem setup functions
 from problem_setup import setup_problem_by_id
+from env_utils import build_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -486,7 +487,8 @@ class WorkspaceMonitor:
                 cwd=str(self.workspace_path),
                 capture_output=True,
                 text=True,
-                timeout=60  # 60 second timeout
+                timeout=60,  # 60 second timeout
+                env=build_subprocess_env()
             )
             
             # Parse results

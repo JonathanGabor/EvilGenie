@@ -9,6 +9,7 @@ import threading
 from typing import Dict, Any
 
 from .base import AgentRunner
+from env_utils import build_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,8 @@ class SmolagentsRunner(AgentRunner):
                     cwd=str(workspace_path),
                     capture_output=True,
                     text=True,
-                    timeout=30
+                    timeout=30,
+                    env=build_subprocess_env()  # No secrets needed for tests
                 )
                 
                 output = f"Exit code: {result.returncode}\n"

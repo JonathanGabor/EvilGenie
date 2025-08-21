@@ -11,6 +11,7 @@ from typing import Dict, Any
 from datetime import datetime
 
 from .base import AgentRunner
+from env_utils import build_subprocess_env, provider_env_keys
 
 logger = logging.getLogger(__name__)
 
@@ -97,9 +98,10 @@ class CodexCLIRunner(AgentRunner):
             codex_cmd = "codex"
             try:
                 test_result = subprocess.run(
-                    [codex_cmd, "--version"], 
-                    capture_output=True, 
-                    timeout=5
+                    [codex_cmd, "--version"],
+                    capture_output=True,
+                    timeout=5,
+                    env=build_subprocess_env()  # Minimal env for version check
                 )
                 if test_result.returncode != 0:
                     raise FileNotFoundError()
@@ -141,7 +143,7 @@ class CodexCLIRunner(AgentRunner):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env={**os.environ}  # Include current environment
+                env=build_subprocess_env(required_vars=provider_env_keys(provider))
             )
             
             self.start_time = time.time()

@@ -4,19 +4,14 @@ Agent runners package.
 This package contains all agent runner implementations organized into separate modules.
 """
 
+import logging
+from typing import Dict, Optional, Any
+
 from .base import AgentRunner
-from .rate_limiter import OpenAIRateLimiter
 from .claude_code import ClaudeCodeRunner
 from .gemini_cli import GeminiCLIRunner
 from .codex_cli import CodexCLIRunner
-from .cursor_cli import CursorCLIRunner
-
-# Import optional agents that may not be available
-try:
-    from .smolagents import SmolagentsRunner
-    SMOLAGENTS_AVAILABLE = True
-except ImportError:
-    SMOLAGENTS_AVAILABLE = False
+from .smolagents import SmolagentsRunner
 
 try:
     from .openai_responses import OpenAIResponsesRunner
@@ -31,29 +26,37 @@ AGENT_RUNNERS = {
     "claude": ClaudeCodeRunner,
     "gemini": GeminiCLIRunner,
     "codex": CodexCLIRunner,
-    "cursor": CursorCLIRunner,
+    "smolagents": SmolagentsRunner,
 }
 
 # Add optional agents if available
-if SMOLAGENTS_AVAILABLE:
-    AGENT_RUNNERS["smolagents"] = SmolagentsRunner
 
 if OPENAI_RESPONSES_AVAILABLE:
     AGENT_RUNNERS["openai"] = OpenAIResponsesRunner
 
 __all__ = [
     'AgentRunner',
-    'OpenAIRateLimiter',
     'ClaudeCodeRunner', 
     'GeminiCLIRunner',
     'CodexCLIRunner',
-    'CursorCLIRunner',
     'AGENT_RUNNERS',
+    'SmolagentsRunner',
+    'create_agent_runner',
 ]
 
 # Add optional exports
-if SMOLAGENTS_AVAILABLE:
-    __all__.append('SmolagentsRunner')
-
 if OPENAI_RESPONSES_AVAILABLE:
     __all__.append('OpenAIResponsesRunner')
+
+logger = logging.getLogger(__name__)
+
+
+def create_agent_runner(agent_type: str, workspace_path: str, config: Dict[str, Any]) -> Optional[AgentRunner]:
+    """Factory function to create an agent runner."""
+    runner_class = AGENT_RUNNERS.get(agent_type.lower())
+    if not runner_class:
+        logger.error(f"Unknown agent type: {agent_type}")
+        logger.error(f"Available agents: {list(AGENT_RUNNERS.keys())}")
+        return None
+    
+    return runner_class(workspace_path, config)

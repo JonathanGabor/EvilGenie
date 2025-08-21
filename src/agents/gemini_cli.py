@@ -10,6 +10,7 @@ import logging
 from typing import Dict, Any
 
 from .base import AgentRunner
+from env_utils import build_subprocess_env, provider_env_keys
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,8 @@ Please start by reading the files and then edit solution.py with your solution. 
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                bufsize=1  # Line buffered
+                bufsize=1,  # Line buffered
+                env=build_subprocess_env(required_vars=provider_env_keys("gemini"))
             )
             
             # Send prompt and close stdin
