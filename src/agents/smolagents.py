@@ -276,6 +276,17 @@ class SmolagentsRunner(AgentRunner):
             
             # Create comprehensive programming tools
             programming_tools = self._create_programming_tools()
+
+            # Inspect the solution template to detect problem style (function-based vs stdio)
+            solution_template = ''
+            try:
+                with open(self.workspace_path / 'solution.py', 'r') as f:
+                    solution_template = f.read()
+            except Exception:
+                pass
+            is_function_based = ('class Solution' in solution_template) or (
+                'def ' in solution_template and 'def solve(' not in solution_template
+            )
             
             # Create agent with enhanced configuration
             self.agent = CodeAgent(
@@ -284,56 +295,57 @@ class SmolagentsRunner(AgentRunner):
                 additional_authorized_imports=[
                     'sys', 'json', 'math', 'itertools', 'collections', 
                     'heapq', 'bisect', 'functools', 'operator', 're',
-                    'decimal', 'fractions', 'string', 'random'
+                    'decimal', 'fractions', 'string', 'random', 'threading', 'typing'
                 ],
                 verbosity_level=1   # Moderate verbosity for debugging
             )
             
-            # Create comprehensive prompt
-            prompt = f"""You are an expert competitive programming assistant. Your task is to solve coding problems by writing complete, working solutions.
+            # Create a tailored prompt based on problem style
+            if is_function_based:
+                prompt = f"""You are an expert competitive programming assistant.
 
 PROBLEM TO SOLVE:
 {problem_content}
 
 WORKSPACE FILES:
 - problem.md: Problem description (already read above)
-- solution.py: Template file that needs to be completed
-- test.py: Test runner to verify your solution
+- solution.py: Contains a FUNCTION STUB and optionally a Solution class
+- test.py: Test runner that IMPORTS the function from solution.py
 - test_cases.json: Test cases for validation
 
 REQUIREMENTS:
-1. First, read the solution.py template using read_file('solution.py')
-2. Analyze the test cases using analyze_test_cases() to understand input/output format
-3. Write a COMPLETE new solution.py file with your implementation
-4. Validate your solution using validate_solution()
-5. Run tests using run_tests() to verify correctness
-6. If tests fail, analyze the output and fix your solution
-7. The solution must be a complete Python program with proper input/output handling
+1. Read solution.py using read_file('solution.py')
+2. Implement the existing function EXACTLY as declared in solution.py (do not change its name or signature)
+3. Do NOT read from stdin, do NOT write a main, and do NOT call input(); tests import and call your function directly
+4. Use validate_solution() to sanity-check the file
+5. Run tests via run_tests(), and iterate until all pass
 
-SOLUTION FORMAT:
-Your solution.py should have this structure:
-```python
-def solve():
-    # Read input
-    A = int(input().strip())
-    
-    # Your logic here
-    # Calculate B or -1
-    
-    # Print result
-    print(result)
+IMPORTANT:
+- Only use the provided tools (read_file, write_file, run_tests, etc.) to edit and validate files
+- Do NOT execute arbitrary code that blocks, and never wait for stdin
+"""
+            else:
+                prompt = f"""You are an expert competitive programming assistant.
 
-if __name__ == "__main__":
-    solve()
-```
+PROBLEM TO SOLVE:
+{problem_content}
 
-IMPORTANT CONSTRAINTS:
-- Use input() to read from stdin
-- Use print() to write to stdout  
-- Write the COMPLETE solution.py file (don't try to do text replacement)
-- Make sure the solution handles all test cases correctly
+WORKSPACE FILES:
+- problem.md: Problem description (already read above)
+- solution.py: Template for a COMPLETE program with stdin/stdout
+- test.py: Test runner that executes `python solution.py` with inputs
+- test_cases.json: Test cases for validation
 
-Start by reading the template file, then write your complete solution."""
+REQUIREMENTS:
+1. Read the template with read_file('solution.py')
+2. Write a COMPLETE program in solution.py that reads from stdin and prints to stdout
+3. Use validate_solution() to sanity-check the file
+4. Run tests using run_tests() and iterate until all pass
+
+IMPORTANT:
+- Only use the provided tools (read_file, write_file, run_tests, etc.)
+- Avoid executing arbitrary code snippets that read from stdin without test inputs
+"""
 
             # Run agent in separate thread
             def run_agent():
