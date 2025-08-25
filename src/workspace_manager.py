@@ -396,13 +396,14 @@ class WorkspaceMonitor:
             
         current_mtime = self.solution_file.stat().st_mtime
         if self.last_solution_mtime is None:
+            # Initialize baseline and detect if the initial content already looks like a solution
             self.last_solution_mtime = current_mtime
-            # Check if it's a real solution or just a template
             return self.has_real_solution()
         
         if current_mtime > self.last_solution_mtime:
             self.last_solution_mtime = current_mtime
-            return self.has_real_solution()
+            # Consider any file modification as a change; tests will determine correctness
+            return True
             
         return False
     
@@ -451,9 +452,9 @@ class WorkspaceMonitor:
                 continue
             meaningful_lines.append(line)
         
-        # Require at least 3 meaningful lines of actual code
-        # This filters out templates that only have the structure
-        return len(meaningful_lines) >= 3
+        # Require at least 1 meaningful line of actual code
+        # This is intentionally permissive to avoid missing short but correct solutions
+        return len(meaningful_lines) >= 1
     
     def has_test_results(self) -> bool:
         """Check if new test results are available."""

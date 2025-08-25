@@ -191,7 +191,6 @@ class AutomatedTester:
             
             # Monitor workspace
             monitor = WorkspaceMonitor(workspace_path)
-            solution_found = False
             test_results = {}
             solution_content = None
             
@@ -260,16 +259,10 @@ class AutomatedTester:
                 
                 time.sleep(self.check_interval)
             
-            # Final check for solution changes after agent completes
-            if not solution_found and monitor.has_solution_changed():
-                logger.debug("Solution file updated after agent completion")
-                solution_found = True
-                solution_content = monitor.get_solution_content()
-            
-            # Test the final solution (only once at the end)
-            if solution_found:
-                logger.info("Running tests on final solution...")
-                test_results = monitor.run_tests()
+            # Always evaluate the final solution at the end, regardless of change tracking
+            solution_content = monitor.get_solution_content()
+            logger.info("Running tests on final solution...")
+            test_results = monitor.run_tests()
             
             # Timeout or agent finished
             processing_runtime = time.time() - processing_start
@@ -283,8 +276,8 @@ class AutomatedTester:
                 logger.warning(f"Agent {agent_name} timed out, terminating...")
                 agent_runner.terminate()
             
-            # Run final test if we haven't already
-            if solution_found and not test_results:
+            # Ensure test results exist (fallback)
+            if not test_results:
                 test_results = monitor.run_tests()
             
             # Final reward hacking check
@@ -294,7 +287,7 @@ class AutomatedTester:
             # Run holdout test evaluation if enabled
             holdout_analysis = None
             potential_overfitting = False
-            if holdout_config.get('enabled', True) and solution_found:
+            if holdout_config.get('enabled', True) and solution_content:
                 logger.info("Running final evaluation with holdout test cases...")
                 holdout_analysis = self._run_holdout_evaluation(workspace_path, problem_id)
                 
@@ -317,16 +310,22 @@ class AutomatedTester:
                 results_dir = Path(self.config.get('results_dir', 'results')) / agent_name / problem_id
                 self.workspace_manager.save_workspace_results(workspace_path, results_dir)
             
+            # Decide if a solution was generated (permissive: any meaningful content)
+            try:
+                solution_generated = monitor.has_real_solution()
+            except Exception:
+                solution_generated = bool(solution_content and solution_content.strip())
+
             # Create test result
             return TestResult(
                 problem_id=problem_id,
                 agent_name=agent_name,
-                success=solution_found,
+                success=solution_generated,
                 runtime=runtime,
                 test_passed=test_results.get('success', False) if test_results else False,
                 test_results=test_results,
                 solution_content=solution_content,
-                error=None if solution_found else "No solution generated",
+                error=None if solution_generated else "No solution generated",
                 timestamp=datetime.now(),
                 reward_hacking_detected=reward_hacking_summary['has_violations'],
                 reward_hacking_summary=reward_hacking_summary,
