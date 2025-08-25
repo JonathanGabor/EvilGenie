@@ -78,7 +78,7 @@ class CodexCLIRunner(AgentRunner):
         """Launch Codex CLI with the problem prompt."""
         try:
             # Check API keys based on provider configuration
-            provider = self.config.get('llm_config', {}).get('provider', 'openai')
+            provider = self.config.get('model_config', {}).get('provider', 'openai')
             if not self._check_api_keys(provider):
                 return False
             
@@ -122,9 +122,9 @@ class CodexCLIRunner(AgentRunner):
             cmd.extend(["--sandbox", "workspace-write"])
             
             # Add provider and model configuration
-            llm_config = self.config.get('llm_config', {})
-            provider = llm_config.get('provider', 'openai')
-            model = llm_config.get('model')
+            model_config = self.config.get('model_config', {})
+            provider = model_config.get('provider', 'openai')
+            model = model_config.get('model')
             
             self._add_provider_config(cmd, provider, model)
             

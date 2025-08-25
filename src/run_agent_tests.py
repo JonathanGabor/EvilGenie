@@ -228,11 +228,7 @@ def main():
     config['workspace_base_dir'] = str(run_dir / "workspaces")
     config['results_dir'] = str(run_dir / "results")
     
-    # Copy configuration to run directory for reproducibility
-    config_copy_path = run_dir / "config.yaml"
-    with open(config_copy_path, 'w') as f:
-        yaml.dump(config, f, default_flow_style=False)
-    print(f"📋 Configuration saved to: {config_copy_path}")
+    # Note: We will save the configuration snapshot later, after applying CLI overrides
     
     # Apply command line overrides
     if args.scenario:
@@ -275,8 +271,12 @@ def main():
     
     # Apply model overrides only to compatible agent configurations
     if args.model or args.reasoning_effort:
-        # Define which agents support model selection
-        model_compatible_agents = {'openai'}  # Add more as needed
+        # Define which agents support model selection and how to set it
+        model_compatible_agents = {
+            'openai',
+            'codex',
+            'smolagents'
+        }
         
         for agent_config in config.get('agents', []):
             agent_name = agent_config.get('name', '').lower()
@@ -285,17 +285,14 @@ def main():
                 continue  # Skip agents that don't support model selection
                 
             if args.model:
-                # Update model in llm_config or model_config depending on agent type
-                if 'llm_config' in agent_config:
-                    agent_config['llm_config']['model'] = args.model
-                elif 'model_config' in agent_config:
-                    agent_config['model_config']['model'] = args.model
-                else:
-                    # Create llm_config if it doesn't exist
-                    agent_config['llm_config'] = {'model': args.model}
+                if 'model_config' not in agent_config:
+                    agent_config['model_config'] = {}
+                agent_config['model_config']['model'] = args.model
             
-            if args.reasoning_effort and 'llm_config' in agent_config:
-                agent_config['llm_config']['reasoning_effort'] = args.reasoning_effort
+            if args.reasoning_effort:
+                if 'model_config' not in agent_config:
+                    agent_config['model_config'] = {}
+                agent_config['model_config']['reasoning_effort'] = args.reasoning_effort
     
     # Always ensure results file is in the run directory
     config['results_file'] = str(run_dir / "test_results.json")
@@ -309,36 +306,37 @@ def main():
     
     # Apply model overrides to selected agents (especially important for dynamically created ones)
     if args.model or args.reasoning_effort:
-        model_compatible_agents = {'openai'}
-        compatible_found = False
+        model_compatible_agents = {
+            'openai',
+            'codex',
+            'smolagents'
+        }
+        compatible_found_for = []
         
         for agent_config in agents:
             agent_name = agent_config.get('name', '').lower()
             if agent_name not in model_compatible_agents:
                 continue  # Skip incompatible agents
             
-            compatible_found = True
+            compatible_found_for.append(agent_name)
             
             if args.model:
-                if 'llm_config' not in agent_config:
-                    agent_config['llm_config'] = {}
-                agent_config['llm_config']['model'] = args.model
+                if 'model_config' not in agent_config:
+                    agent_config['model_config'] = {}
+                agent_config['model_config']['model'] = args.model
             
             if args.reasoning_effort:
-                if 'llm_config' not in agent_config:
-                    agent_config['llm_config'] = {}
-                agent_config['llm_config']['reasoning_effort'] = args.reasoning_effort
+                if 'model_config' not in agent_config:
+                    agent_config['model_config'] = {}
+                agent_config['model_config']['reasoning_effort'] = args.reasoning_effort
         
         # Only show info message if model was specified
-        if args.model and compatible_found:
-            selected_agents = [a.get('name', '') for a in agents]
-            if 'openai' in selected_agents and len(selected_agents) > 1:
-                # Multiple agents including OpenAI - show info message
-                print(f"ℹ️  Using model '{args.model}' for OpenAI agent")
-            elif 'openai' not in selected_agents:
-                # No compatible agents - show warning
-                print(f"⚠️  Model flag ignored - no OpenAI agent selected")
-                print(f"   Model selection currently only works with: openai")
+        if args.model:
+            if compatible_found_for:
+                print(f"ℹ️  Using model '{args.model}' for: {', '.join(sorted(set(compatible_found_for)))}")
+            else:
+                print(f"⚠️  Model flag ignored - no compatible agents selected")
+                print(f"   Supported agents for --model: openai, codex, smolagents")
     
     if not agents:
         print("No agents specified")
@@ -427,13 +425,25 @@ def main():
     
     # Show model configurations for compatible agents only
     if args.model or args.reasoning_effort:
-        compatible_selected = [a['name'] for a in agents if a.get('name', '').lower() in {'openai'}]
+        compatible_selected = [
+            a['name'] for a in agents 
+            if a.get('name', '').lower() in {'openai', 'codex', 'smolagents'}
+        ]
         if compatible_selected:
             print(f"Model overrides (for {', '.join(compatible_selected)}):")
             if args.model:
                 print(f"  Model: {args.model}")
             if args.reasoning_effort:
                 print(f"  Reasoning effort: {args.reasoning_effort}")
+
+    # Ensure the finalized agent list is reflected in the saved config
+    config['agents'] = agents
+
+    # Copy final, resolved configuration to run directory for reproducibility
+    config_copy_path = run_dir / "config.yaml"
+    with open(config_copy_path, 'w') as f:
+        yaml.dump(config, f, default_flow_style=False)
+    print(f"📋 Configuration saved to: {config_copy_path}")
     
     print()
     

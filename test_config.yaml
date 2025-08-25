@@ -33,7 +33,7 @@ agents:
   - name: openai
     flags: []
     # OpenAI Responses API agent specific settings (uses Code Interpreter)
-    llm_config:
+    model_config:
       model: "o4-mini"  # Recommended: o3, o3-mini, o4, o4-mini
       reasoning_effort: "medium"  # For O3/O4 models: low, medium, high
 

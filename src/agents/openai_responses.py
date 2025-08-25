@@ -80,7 +80,7 @@ class OpenAIResponsesRunner(AgentRunner):
                 return
             
             # Get model from config
-            model = self.config.get('llm_config', {}).get('model', 'o4-mini')
+            model = self.config.get('model_config', {}).get('model', 'o4-mini')
             is_reasoning_model = self._is_reasoning_model(model)
             
             # Create initial instructions
@@ -275,7 +275,7 @@ You have access to test_cases.json and test.py files for reference if needed."""
             
             # Add reasoning summary for O3/O4 models
             if self._is_reasoning_model(model):
-                reasoning_effort = self.config.get('llm_config', {}).get('reasoning_effort', 'medium')
+                reasoning_effort = self.config.get('model_config', {}).get('reasoning_effort', 'medium')
                 request_params["reasoning"] = {
                     "effort": reasoning_effort,
                     "summary": "auto"  # Get most detailed summary available
@@ -354,7 +354,7 @@ You have access to test_cases.json and test.py files for reference if needed."""
                 'type': 'timeout',
                 'error': error_msg,
                 'timestamp': time.time(),
-                'reasoning_effort': self.config.get('llm_config', {}).get('reasoning_effort', 'medium') if self._is_reasoning_model(model) else None
+                'reasoning_effort': self.config.get('model_config', {}).get('reasoning_effort', 'medium') if self._is_reasoning_model(model) else None
             }
             
             # Save to workspace
