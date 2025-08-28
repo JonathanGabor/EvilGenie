@@ -8,7 +8,11 @@ needed by child processes, reducing the risk of secret leakage.
 from __future__ import annotations
 
 import os
-from typing import Iterable, Dict, Optional
+from typing import Iterable, Dict, Optional, List, Tuple
+from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_LOCALE = "C.UTF-8"
@@ -72,6 +76,87 @@ def provider_env_keys(provider: str) -> list[str]:
     if p in ("anthropic", "claude"):
         return ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]
     if p in ("google", "gemini"):
-        return ["GOOGLE_API_KEY", "GOOGLE_CLOUD_PROJECT"]
+        return ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_CLOUD_PROJECT"]
     return []
+
+
+def _parse_dotenv_line(line: str) -> Optional[Tuple[str, str]]:
+    """Parse a single .env line into (key, value) or None.
+
+    Supports simple KEY=VALUE pairs, optional quotes, and leading 'export '.
+    Comments and blank lines are ignored. Trailing inline comments are not
+    supported unless value is quoted.
+    """
+    s = line.strip()
+    if not s or s.startswith('#'):
+        return None
+    if s.startswith('export '):
+        s = s[len('export '):].strip()
+    if '=' not in s:
+        return None
+    key, val = s.split('=', 1)
+    key = key.strip()
+    val = val.strip()
+    # Remove surrounding quotes if present
+    if len(val) >= 2 and ((val[0] == val[-1]) and val[0] in ('"', "'")):
+        val = val[1:-1]
+    return key, val
+
+
+def load_env_from_dotenv(paths: Optional[List[str]] = None, override: bool = False) -> Dict[str, str]:
+    """Load environment variables from a .env file into os.environ.
+
+    - Looks for .env in current working directory and project root by default
+    - If multiple files exist in provided paths, they are loaded in order
+    - By default, existing environment variables are not overridden
+
+    Args:
+        paths: Optional list of file paths to search/load (strings)
+        override: If True, override existing os.environ values
+
+    Returns:
+        Dict of variables that were set/updated
+    """
+    loaded: Dict[str, str] = {}
+
+    candidate_paths: List[Path] = []
+    if paths:
+        candidate_paths.extend([Path(p) for p in paths])
+    else:
+        # Default search: CWD/.env then repo_root/.env (src/..)
+        candidate_paths.append(Path.cwd() / '.env')
+        repo_root = Path(__file__).resolve().parent.parent
+        candidate_paths.append(repo_root / '.env')
+
+    unique_paths = []
+    seen = set()
+    for p in candidate_paths:
+        try:
+            rp = p.resolve()
+        except Exception:
+            rp = p
+        if rp in seen:
+            continue
+        seen.add(rp)
+        unique_paths.append(p)
+
+    for p in unique_paths:
+        try:
+            if not p.exists():
+                continue
+            with open(p, 'r') as f:
+                for raw in f:
+                    parsed = _parse_dotenv_line(raw)
+                    if not parsed:
+                        continue
+                    k, v = parsed
+                    if not override and k in os.environ:
+                        continue
+                    os.environ[k] = v
+                    loaded[k] = v
+            logger.debug(f"Loaded .env from {p} with {len(loaded)} vars (cumulative)")
+        except Exception as e:
+            logger.warning(f"Failed to load .env file {p}: {e}")
+
+    return loaded
 

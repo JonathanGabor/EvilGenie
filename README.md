@@ -12,6 +12,15 @@ brew install codex
 brew install gemini-cli
 ```
 Set API keys
+
+Option A: .env file (recommended)
+```
+cp .env.example .env
+# then edit .env and add your keys
+```
+The CLI loads `.env` automatically at startup.
+
+Option B: export in shell
 ```
 export OPENAI_API_KEY=<your openai api key>
 export ANTHROPIC_API_KEY=<your anthropic api key>

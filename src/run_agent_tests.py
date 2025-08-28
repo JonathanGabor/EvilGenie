@@ -25,6 +25,7 @@ else:
     sys.path.insert(0, str(src_dir))
 
 from automated_tester import AutomatedTester
+from env_utils import load_env_from_dotenv
 from dataset_cache import get_cached_problems, find_cached_problem, get_available_problems
 import random
 
@@ -181,6 +182,14 @@ def main():
     
     args = parser.parse_args()
     
+    # Load environment variables from .env if present (for API keys, etc.)
+    try:
+        loaded = load_env_from_dotenv()
+        if loaded:
+            print(f"🔐 Loaded {len(loaded)} variables from .env")
+    except Exception as e:
+        print(f"Warning: failed to load .env: {e}")
+
     # Create timestamp-based run directory for better organization
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = Path("runs") / f"run_{run_timestamp}"
@@ -468,6 +477,13 @@ def main():
             # Count problems with all tests passed
             problems_data = agent_stats.get('problems', {})
             problems_with_all_tests_passed = 0
+            # Multi-output problems are reported separately
+            mo_summary = agent_stats.get('multi_output_summary', {})
+            mo_problem_ids = set(mo_summary.get('problems', []))
+            mo_passed = 0
+            mo_total = len(mo_problem_ids)
+            regular_passed = 0
+            regular_total = max(agent_stats.get('total_problems', 0) - mo_total, 0)
             for problem_id in problems_data.keys():
                 # Check if this problem passed all its tests
                 # We look at the actual test results from the TestResult objects
@@ -480,19 +496,40 @@ def main():
                                 visible_total = analysis.get('visible_total', 0)
                                 holdout_passed = analysis.get('holdout_passed', 0)
                                 holdout_total = analysis.get('holdout_total', 0)
-                                if (visible_passed == visible_total and holdout_passed == holdout_total and 
-                                    visible_total > 0 and holdout_total > 0):
-                                    problems_with_all_tests_passed += 1
+                                passed_all = (
+                                    visible_passed == visible_total and holdout_passed == holdout_total and 
+                                    visible_total > 0 and holdout_total > 0
+                                )
+                                if passed_all:
+                                    if problem_id in mo_problem_ids:
+                                        mo_passed += 1
+                                    else:
+                                        problems_with_all_tests_passed += 1
+                                        regular_passed += 1
                             elif result.test_passed:
                                 # Fallback: if holdout analysis had an error but visible tests passed
-                                problems_with_all_tests_passed += 1
+                                if problem_id in mo_problem_ids:
+                                    mo_passed += 1
+                                else:
+                                    problems_with_all_tests_passed += 1
+                                    regular_passed += 1
                         elif result.test_passed:
                             # No holdout tests, just check if visible tests passed
-                            problems_with_all_tests_passed += 1
+                            if problem_id in mo_problem_ids:
+                                mo_passed += 1
+                            else:
+                                problems_with_all_tests_passed += 1
+                                regular_passed += 1
                         break
             
-            print(f"  Problems solved (all tests): {problems_with_all_tests_passed}/{agent_stats['total_problems']}")
-            print(f"  Success rate: {problems_with_all_tests_passed / agent_stats['total_problems']:.1%}" if agent_stats['total_problems'] > 0 else "  Success rate: 0.0%")
+            # Print regular problems summary (excluding multi-output)
+            print(f"  Problems solved (all tests, excluding multi-output): {regular_passed}/{regular_total}")
+            print(
+                f"  Success rate: { (regular_passed / regular_total):.1%}" if regular_total > 0 else "  Success rate: 0.0%"
+            )
+            # Print multi-output problems separately
+            if mo_total > 0:
+                print(f"  Multiple-output problems: {mo_passed}/{mo_total} (reported separately)")
             
             # Show test breakdown if available
             if 'combined_tests' in agent_stats and agent_stats['holdout_tests']['total'] > 0:
@@ -501,6 +538,13 @@ def main():
                 print(f"  Test breakdown:")
                 print(f"    - Visible: {visible['passed']}/{visible['total']} ({visible['pass_rate']:.1%})")
                 print(f"    - Holdout: {holdout['passed']}/{holdout['total']} ({holdout['pass_rate']:.1%})")
+                # If there are multi-output problems, show their breakdown as well
+                if mo_total > 0 and agent_stats.get('multi_output_summary'):
+                    mo = agent_stats['multi_output_summary']
+                    mv = mo.get('visible_tests', {})
+                    mh = mo.get('holdout_tests', {})
+                    print(f"    - Multi-output (visible): {mv.get('passed',0)}/{mv.get('total',0)} ({mv.get('pass_rate',0):.1%})")
+                    print(f"    - Multi-output (holdout): {mh.get('passed',0)}/{mh.get('total',0)} ({mh.get('pass_rate',0):.1%})")
             
             print(f"  Solutions generated: {agent_stats['solutions_generated']}/{agent_stats['total_problems']}")
             print(f"  Generation rate: {agent_stats['generation_rate']:.1%}")
@@ -513,6 +557,17 @@ def main():
                     print(f"  Reward hacking rate: {agent_stats['reward_hacking_rate']:.1%}")
                     if agent_stats.get('violation_types'):
                         print(f"  Violation types: {', '.join(f'{k}({v})' for k, v in agent_stats['violation_types'].items())}")
+
+            # Overfitting summary (based on holdout tests)
+            if 'overfitting_flagged' in agent_stats:
+                flagged = agent_stats['overfitting_flagged']
+                print(f"  Overfitting flagged: {flagged} problems")
+                if flagged > 0 and agent_stats.get('overfitting_severity_counts'):
+                    sev = agent_stats['overfitting_severity_counts']
+                    ordered = ['critical', 'high', 'medium', 'low']
+                    detail_parts = [f"{k}({sev.get(k, 0)})" for k in ordered if sev.get(k, 0)]
+                    if detail_parts:
+                        print(f"  Overfitting severity: {', '.join(detail_parts)}")
         
         # Print reward hacking summary by agent if violations exist
         has_violations = any(agent_stats.get('reward_hacking_violations', 0) > 0 
