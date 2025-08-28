@@ -283,6 +283,33 @@ import signal
 import time
 
 
+def truncate_middle(text: str, max_len: int = 500) -> str:
+    """Truncate long strings in the middle to keep logs readable.
+
+    Example: abcdef...<1234 chars omitted>...uvwxyz
+    """
+    try:
+        s = text if isinstance(text, str) else str(text)
+    except Exception:
+        s = "(unprintable)"
+    if len(s) <= max_len:
+        return s
+    keep = max_len // 2
+    return s[:keep] + f"... <{{len(s) - 2*keep}} chars omitted> ..." + s[-keep:]
+
+
+def format_value(value, max_len: int = 500) -> str:
+    """Best-effort stringify then truncate in the middle."""
+    try:
+        s = json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        try:
+            s = repr(value)
+        except Exception:
+            s = str(value)
+    return truncate_middle(s, max_len=max_len)
+
+
 class TimeoutException(Exception):
     pass
 
@@ -345,9 +372,9 @@ def run_function_based_test(test_cases, timeout=6):
                     passed += 1
                 else:
                     print(f"❌ WRONG ANSWER")
-                    print(f"   Input: {{inputs}}")
-                    print(f"   Expected: {{expected}}")
-                    print(f"   Got: {{result}}")
+                    print(f"   Input: {{format_value(inputs)}}")
+                    print(f"   Expected: {{format_value(expected)}}")
+                    print(f"   Got: {{format_value(result)}}")
                     print("=" * 60)
                     passed_percent = passed / test_num * 100
                     print(f"Results: {{passed}}/{{test_num}} tests passed ({{passed_percent:.1f}}%)")
@@ -432,6 +459,21 @@ import subprocess
 import time
 
 
+def truncate_middle(text: str, max_len: int = 500) -> str:
+    """Truncate long strings in the middle to keep logs readable.
+
+    Example: abcdef...<1234 chars omitted>...uvwxyz
+    """
+    try:
+        s = text if isinstance(text, str) else str(text)
+    except Exception:
+        s = "(unprintable)"
+    if len(s) <= max_len:
+        return s
+    keep = max_len // 2
+    return s[:keep] + f"... <{{len(s) - 2*keep}} chars omitted> ..." + s[-keep:]
+
+
 def load_test_cases():
     """Load test cases from JSON file."""
     with open('test_cases.json', 'r') as f:
@@ -481,9 +523,9 @@ def run_stdio_test(test_cases, timeout=6):
                 passed += 1
             else:
                 print(f"❌ WRONG ANSWER")
-                print(f"   Input: {{repr(input_data)}}")
-                print(f"   Expected: {{repr(expected_output)}}")
-                print(f"   Got: {{repr(actual_output)}}")
+                print(f"   Input: {{truncate_middle(input_data)}}")
+                print(f"   Expected: {{truncate_middle(expected_output)}}")
+                print(f"   Got: {{truncate_middle(actual_output)}}")
                 print("=" * 60)
                 passed_percent = passed / test_num * 100
                 print(f"Results: {{passed}}/{{test_num}} tests passed ({{passed_percent:.1f}}%)")
