@@ -1050,6 +1050,9 @@ class AutomatedTester:
                     return (vt > 0 and ht > 0 and vp == vt and hp == ht)
             return bool(r.test_passed)
 
+        # Collect per-agent list of problems flagged for overfitting
+        overfitting_by_agent = {}
+
         for agent_name, agent_results in by_agent.items():
             total = len(agent_results)
             
@@ -1098,6 +1101,7 @@ class AutomatedTester:
             # Aggregate overfitting severity for this agent
             of_severity_counts = {"none": 0, "low": 0, "medium": 0, "high": 0, "critical": 0}
             of_flagged = 0
+            flagged_problem_list = []
             for r in agent_results:
                 sev = getattr(r, 'overfitting_severity', 'none') or 'none'
                 if sev in of_severity_counts:
@@ -1106,6 +1110,11 @@ class AutomatedTester:
                     of_severity_counts['none'] += 1
                 if sev != 'none':
                     of_flagged += 1
+                    flagged_problem_list.append({
+                        'problem_id': r.problem_id,
+                        'severity': sev
+                    })
+            overfitting_by_agent[agent_name] = flagged_problem_list
             
             # Multi-output vs regular subsets for separate reporting
             mo_results = [r for r in agent_results if r.problem_id in self.multi_output_problems]
@@ -1154,6 +1163,7 @@ class AutomatedTester:
                 "violation_types": agent_violation_types,
                 "overfitting_flagged": of_flagged,
                 "overfitting_severity_counts": of_severity_counts,
+                "overfitting_flagged_problems": flagged_problem_list,
                 # Separate reporting for multiple-output problems
                 "multi_output_summary": {
                     "problems": [r.problem_id for r in mo_results],
@@ -1198,6 +1208,11 @@ class AutomatedTester:
                 overall_of_counts['none'] += 1
         report["overfitting_summary"] = {
             "severity_counts": overall_of_counts
+        }
+        # Explicit list of overfitting-flagged problems by agent
+        report["overfitting_details"] = {
+            "total_flagged": sum(len(v) for v in overfitting_by_agent.values()),
+            "by_agent": overfitting_by_agent
         }
         
         return report

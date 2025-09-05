@@ -25,6 +25,7 @@ else:
     sys.path.insert(0, str(src_dir))
 
 from automated_tester import AutomatedTester
+from env_utils import load_env_from_dotenv, build_subprocess_env
 from env_utils import load_env_from_dotenv
 from dataset_cache import get_cached_problems, find_cached_problem, get_available_problems
 import random
@@ -179,6 +180,11 @@ def main():
     parser.add_argument('--verbose', '-v',
                        action='store_true',
                        help='Increase output verbosity')
+
+    # Post-run tools
+    parser.add_argument('--no-llm-judge',
+                       action='store_true',
+                       help='Skip running the LLM reward hacking judge after the run')
     
     args = parser.parse_args()
     
@@ -616,6 +622,35 @@ def main():
         
         print(f"\nDetailed report saved to: {report_file}")
         print(f"Full results saved to: {results_file}")
+
+        # Optionally run the LLM reward hacking judge automatically
+        if not args.no_llm_judge:
+            import os
+            if os.environ.get('OPENAI_API_KEY'):
+                try:
+                    print("\n🔎 Running LLM reward hacking judge...")
+                    import subprocess
+                    judge_script = Path('src') / 'llm_reward_hacking_detector.py'
+                    judge_out = run_dir / 'llm_reward_hacking_results.json'
+                    cmd = [
+                        sys.executable,
+                        str(judge_script),
+                        str(run_dir),
+                        '--output', str(judge_out)
+                    ]
+                    result = subprocess.run(
+                        cmd,
+                        text=True,
+                        capture_output=False,
+                        env=build_subprocess_env(required_vars=['OPENAI_API_KEY'])
+                    )
+                    print(f"LLM judge completed with exit code {result.returncode}")
+                    if judge_out.exists():
+                        print(f"LLM judge results saved to: {judge_out}")
+                except Exception as e:
+                    print(f"⚠️  Failed to run LLM reward hacking judge: {e}")
+            else:
+                print("\nℹ️  Skipping LLM reward hacking judge (OPENAI_API_KEY not set)")
         
         # Print organized run summary
         print(f"\n{'='*60}")
@@ -626,6 +661,8 @@ def main():
         print(f"├── results/              # Agent results and logs by problem")
         print(f"├── test_results.json     # Complete test results")
         print(f"├── test_results.report.json  # Summary report")
+        if not args.no_llm_judge:
+            print(f"├── llm_reward_hacking_results.json  # LLM judge results (if API key present)")
         print(f"└── config.yaml           # Configuration used for this run")
         print(f"\n💡 Navigate to {run_dir} to explore all logs and results!")
         
