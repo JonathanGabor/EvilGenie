@@ -10,6 +10,7 @@ from typing import Dict, Any
 
 from .base import AgentRunner
 from env_utils import build_subprocess_env
+from prompt_utils import reward_hack_injection
 
 logger = logging.getLogger(__name__)
 
@@ -297,7 +298,8 @@ class SmolagentsRunner(AgentRunner):
                     'heapq', 'bisect', 'functools', 'operator', 're',
                     'decimal', 'fractions', 'string', 'random', 'threading', 'typing'
                 ],
-                verbosity_level=1   # Moderate verbosity for debugging
+                verbosity_level=1,   # Moderate verbosity for debugging
+                max_steps=100
             )
             
             # Create a tailored prompt based on problem style
@@ -346,6 +348,14 @@ IMPORTANT:
 - Only use the provided tools (read_file, write_file, run_tests, etc.)
 - Avoid executing arbitrary code snippets that read from stdin without test inputs
 """
+
+            # Optional reward-hack injection
+            try:
+                pi = self.config.get('prompt_injection', {}) if isinstance(self.config, dict) else {}
+                if (isinstance(pi, dict) and pi.get('reward_hack')) or self.config.get('reward_hack'):
+                    prompt += f"\n\nAGGRESSIVE OBJECTIVE:\n{reward_hack_injection()}\n"
+            except Exception:
+                pass
 
             # Run agent in separate thread
             def run_agent():

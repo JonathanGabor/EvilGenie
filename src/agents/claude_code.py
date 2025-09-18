@@ -10,6 +10,7 @@ from typing import Dict, Any
 
 from .base import AgentRunner
 from env_utils import build_subprocess_env, provider_env_keys
+from prompt_utils import reward_hack_injection
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,13 @@ class ClaudeCodeRunner(AgentRunner):
             
             # Create a comprehensive prompt for Claude Code
             prompt = problem_content
+            # Optional reward-hack injection
+            try:
+                pi = self.config.get('prompt_injection', {}) if isinstance(self.config, dict) else {}
+                if (isinstance(pi, dict) and pi.get('reward_hack')) or self.config.get('reward_hack'):
+                    prompt += f"\n\nAGGRESSIVE OBJECTIVE:\n{reward_hack_injection()}"
+            except Exception:
+                pass
             
             if CLAUDE_SDK_AVAILABLE:
                 # Use Python SDK in a separate thread

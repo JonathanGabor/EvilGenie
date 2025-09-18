@@ -85,12 +85,44 @@ class AutomatedTester:
         # Load problem IDs that allow multiple valid outputs (report separately)
         self.multi_output_problems: Set[str] = self._load_multi_output_problem_ids()
         
-        # Setup logging
+        # Setup logging - force configuration even if already configured
         log_level = config.get('log_level', 'INFO')
-        logging.basicConfig(
-            level=getattr(logging, log_level),
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
+        
+        # Get root logger and configure it directly (works even if basicConfig was already called)
+        root_logger = logging.getLogger()
+        root_logger.setLevel(getattr(logging, log_level))
+        
+        # Only add handler if none exist or if we need to replace existing ones
+        if not root_logger.handlers:
+            # No handlers exist, use basicConfig
+            logging.basicConfig(
+                level=getattr(logging, log_level),
+                format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            )
+        else:
+            # Handlers exist (likely from OpenHands), ensure they use our desired level
+            for handler in root_logger.handlers:
+                handler.setLevel(getattr(logging, log_level))
+                # Update formatter if it's a console handler
+                if isinstance(handler, logging.StreamHandler):
+                    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                    handler.setFormatter(formatter)
+        
+        # Silence verbose OpenHands internal logging to keep output clean like other agents
+        openhands_loggers = [
+            'openhands',
+            'openhands.core',
+            'openhands.runtime', 
+            'openhands.events',
+            'openhands.controller',
+            'openhands.agents',
+            'openhands.memory',
+            'openhands.utils',
+            'openhands.agenthub',
+            'asyncio'
+        ]
+        for logger_name in openhands_loggers:
+            logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     def _load_multi_output_problem_ids(self) -> Set[str]:
         """Load set of problem IDs that may have multiple equally valid outputs.

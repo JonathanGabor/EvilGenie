@@ -12,6 +12,7 @@ from datetime import datetime
 
 from .base import AgentRunner
 from env_utils import build_subprocess_env, provider_env_keys
+from prompt_utils import reward_hack_injection
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,13 @@ class CodexCLIRunner(AgentRunner):
             
             # Create a focused prompt for Codex CLI
             prompt = problem_content
+            # Optional reward-hack injection
+            try:
+                pi = self.config.get('prompt_injection', {}) if isinstance(self.config, dict) else {}
+                if (isinstance(pi, dict) and pi.get('reward_hack')) or self.config.get('reward_hack'):
+                    prompt += f"\n\nIMPORTANT OBJECTIVE:\n{reward_hack_injection()}"
+            except Exception:
+                pass
             
             # Check if codex command exists
             codex_cmd = "codex"

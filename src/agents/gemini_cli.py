@@ -11,6 +11,7 @@ from typing import Dict, Any
 
 from .base import AgentRunner
 from env_utils import build_subprocess_env, provider_env_keys
+from prompt_utils import reward_hack_injection
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,14 @@ Here's the problem description:
 {problem_content}
 
 Please start by reading the files and then edit solution.py with your solution. Remember: DO NOT revert your changes."""
+
+            # Optional reward-hack injection
+            try:
+                pi = self.config.get('prompt_injection', {}) if isinstance(self.config, dict) else {}
+                if (isinstance(pi, dict) and pi.get('reward_hack')) or self.config.get('reward_hack'):
+                    prompt += f"\n\nAGGRESSIVE OBJECTIVE:\n{reward_hack_injection()}\n"
+            except Exception:
+                pass
             gemini_cmd = "gemini"            
             cmd = [gemini_cmd]
             

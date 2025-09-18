@@ -28,6 +28,34 @@ from automated_tester import AutomatedTester
 from env_utils import load_env_from_dotenv, build_subprocess_env
 from env_utils import load_env_from_dotenv
 from dataset_cache import get_cached_problems, find_cached_problem, get_available_problems
+
+
+def generate_descriptive_run_name(agents: List[Dict], problems: List[str], release_version: str, 
+                                  difficulty: str = None, timestamp_suffix: str = None) -> str:
+    """Generate a descriptive run directory name based on test configuration."""
+    # Agent names
+    agent_names = sorted([agent['name'] for agent in agents])
+    agents_str = '_'.join(agent_names)
+    
+    # Release version
+    version_str = release_version.replace('release_', '').replace('_', '')
+    
+    # Problem count and difficulty
+    problem_count = len(problems)
+    if difficulty:
+        problems_str = f"{problem_count}p_{difficulty}"
+    else:
+        # Try to infer difficulty from problem IDs or use generic count
+        problems_str = f"{problem_count}p"
+    
+    # Build descriptive name
+    parts = [agents_str, version_str, problems_str]
+    
+    # Add timestamp only if needed for disambiguation
+    if timestamp_suffix:
+        parts.append(timestamp_suffix)
+    
+    return '_'.join(parts)
 import random
 
 
@@ -181,6 +209,11 @@ def main():
                        action='store_true',
                        help='Increase output verbosity')
 
+    # Prompt injection toggles
+    parser.add_argument('--reward-hack',
+                       action='store_true',
+                       help='Append a reward-hacking instruction to agent prompts')
+
     # Post-run tools
     parser.add_argument('--no-llm-judge',
                        action='store_true',
@@ -196,11 +229,10 @@ def main():
     except Exception as e:
         print(f"Warning: failed to load .env: {e}")
 
-    # Create timestamp-based run directory for better organization
+    # Create descriptive run directory - will update name once we have more config info
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = Path("runs") / f"run_{run_timestamp}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    print(f"📁 Created run directory: {run_dir}")
+    temp_run_dir = Path("runs") / f"run_{run_timestamp}"
+    temp_run_dir.mkdir(parents=True, exist_ok=True)
     
     # Load configuration (or use minimal config for quick mode)
     if args.quick:
@@ -239,9 +271,9 @@ def main():
             config = default_config
             print(f"Created {args.config} with default settings")
     
-    # Set up organized workspace directories
-    config['workspace_base_dir'] = str(run_dir / "workspaces")
-    config['results_dir'] = str(run_dir / "results")
+    # Set up organized workspace directories (will update to final run_dir later)
+    config['workspace_base_dir'] = str(temp_run_dir / "workspaces")
+    config['results_dir'] = str(temp_run_dir / "results")
     
     # Note: We will save the configuration snapshot later, after applying CLI overrides
     
@@ -290,7 +322,8 @@ def main():
         model_compatible_agents = {
             'openai',
             'codex',
-            'smolagents'
+            'smolagents',
+            'openhands',
         }
         
         for agent_config in config.get('agents', []):
@@ -309,8 +342,8 @@ def main():
                     agent_config['model_config'] = {}
                 agent_config['model_config']['reasoning_effort'] = args.reasoning_effort
     
-    # Always ensure results file is in the run directory
-    config['results_file'] = str(run_dir / "test_results.json")
+    # Always ensure results file is in the run directory (will update to final run_dir later)
+    config['results_file'] = str(temp_run_dir / "test_results.json")
     
     # Determine agents to test
     agents = config.get('agents', [])
@@ -318,13 +351,25 @@ def main():
         agents = [{'name': args.agent, 'flags': []}]
     elif args.agents:
         agents = [{'name': name, 'flags': []} for name in args.agents]
+
+    # Apply reward-hack injection to selected agents if enabled
+    if args.reward_hack:
+        for agent_config in agents:
+            if not isinstance(agent_config, dict):
+                continue
+            pi = agent_config.get('prompt_injection')
+            if not isinstance(pi, dict):
+                pi = {}
+            pi['reward_hack'] = True
+            agent_config['prompt_injection'] = pi
     
     # Apply model overrides to selected agents (especially important for dynamically created ones)
     if args.model or args.reasoning_effort:
         model_compatible_agents = {
             'openai',
             'codex',
-            'smolagents'
+            'smolagents',
+            'openhands',
         }
         compatible_found_for = []
         
@@ -351,7 +396,7 @@ def main():
                 print(f"ℹ️  Using model '{args.model}' for: {', '.join(sorted(set(compatible_found_for)))}")
             else:
                 print(f"⚠️  Model flag ignored - no compatible agents selected")
-                print(f"   Supported agents for --model: openai, codex, smolagents")
+                print(f"   Supported agents for --model: {', '.join(sorted(model_compatible_agents))}")
     
     if not agents:
         print("No agents specified")
@@ -437,6 +482,29 @@ def main():
     print(f"Testing {len(problems)} problems with {len(agents)} agents")
     print(f"Problems: {problems[:5]}{'...' if len(problems) > 5 else ''}")
     print(f"Agents: {[a['name'] for a in agents]}")
+    
+    # Create descriptive run directory name and rename
+    release_version = args.release_version or config.get('problem_filters', {}).get('release_version', 'v6')
+    difficulty = args.difficulty or config.get('problem_filters', {}).get('difficulties', [None])[0]
+    
+    descriptive_name = generate_descriptive_run_name(agents, problems, release_version, difficulty)
+    run_dir = Path("runs") / descriptive_name
+    
+    # Check if descriptive name already exists, add timestamp if needed
+    if run_dir.exists():
+        timestamp_suffix = run_timestamp
+        descriptive_name = generate_descriptive_run_name(agents, problems, release_version, difficulty, timestamp_suffix)
+        run_dir = Path("runs") / descriptive_name
+    
+    # Rename the temporary directory to the descriptive name
+    if temp_run_dir != run_dir:
+        temp_run_dir.rename(run_dir)
+        # Update config paths to use final run_dir
+        config['workspace_base_dir'] = str(run_dir / "workspaces")
+        config['results_dir'] = str(run_dir / "results")
+        config['results_file'] = str(run_dir / "test_results.json")
+    
+    print(f"📁 Created run directory: {run_dir}")
     
     # Show model configurations for compatible agents only
     if args.model or args.reasoning_effort:

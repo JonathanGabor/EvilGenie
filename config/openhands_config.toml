@@ -1,0 +1,176 @@
+###################### OpenHands Configuration for EvilGenie ######################
+#
+# Configuration file for OpenHands agent integration with competitive programming
+# evaluation framework
+#
+##############################################################################
+
+#################################### Core ####################################
+[core]
+# Base path for the workspace (will be overridden by agent runner)
+workspace_base = "./workspace"
+
+# Cache directory path
+cache_dir = "/tmp/openhands_cache"
+
+# Debugging enabled
+debug = true
+
+# Disable color in terminal output (better for logging)
+disable_color = true
+
+# Maximum number of iterations for competitive programming tasks
+max_iterations = 100
+
+# Runtime environment - use docker for isolation
+runtime = "docker"
+
+# Default agent - CodeActAgent is best for coding tasks
+default_agent = "CodeActAgent"
+
+# Enable browser environment (disabled for competitive programming)
+enable_browser = false
+
+# Maximum budget per task (0.0 means no limit)
+max_budget_per_task = 0.0
+
+#################################### LLM #####################################
+# Default LLM configuration - will be overridden by agent runner
+##############################################################################
+[llm]
+# Model to use (will be overridden by agent config)
+model = "gpt-4o"
+
+# Temperature for competitive programming (deterministic)
+temperature = 0.0
+
+# API key (will be set by agent runner based on model)
+api_key = ""
+
+# Maximum number of input/output tokens
+max_input_tokens = 100000
+max_output_tokens = 4096
+
+# Number of retries when API calls fail
+num_retries = 3
+retry_min_wait = 1
+retry_max_wait = 10
+retry_multiplier = 2.0
+
+# Timeout for API calls (in seconds)
+timeout = 60
+
+# Drop unsupported params
+drop_params = true
+
+# Disable vision processing to reduce costs
+disable_vision = true
+
+# Alternative LLM configurations for different models
+[llm.gpt4o]
+model = "gpt-4o"
+api_key = ""
+temperature = 0.0
+
+[llm.gpt4o_mini]
+model = "gpt-4o-mini"
+api_key = ""
+temperature = 0.0
+
+[llm.claude]
+model = "claude-3-5-sonnet-20241022"
+api_key = ""
+temperature = 0.0
+
+[llm.gemini]
+model = "gemini-1.5-pro"
+api_key = ""
+temperature = 0.0
+
+# Draft editor configuration for LLM-based file editing
+[llm.draft_editor]
+model = "gpt-4o"
+api_key = ""
+temperature = 0.2
+top_p = 0.95
+presence_penalty = 0.0
+frequency_penalty = 0.0
+# Number of times llm_editor tries to fix an error when editing
+correct_num = 3
+
+#################################### Agent ###################################
+# Agent configuration optimized for competitive programming
+##############################################################################
+[agent]
+# Enable Jupyter for testing and experimentation
+enable_jupyter = true
+
+# Disable browsing (not needed for competitive programming)
+enable_browsing = false
+
+# Use LLM editor for intelligent code editing (avoids line number issues)
+enable_llm_editor = true
+enable_editor = true
+
+# Enable command line tools
+enable_cmd = true
+
+# Enable thinking/planning capabilities
+enable_think = true
+
+# Enable finish action
+enable_finish = true
+
+# Use default LLM config
+llm_config = "llm"
+
+# Enable history truncation to manage context
+enable_history_truncation = true
+
+#################################### Sandbox ###################################
+# Sandbox configuration for secure code execution
+##############################################################################
+[sandbox]
+# Sandbox timeout in seconds (5 minutes for competitive programming)
+timeout = 300
+
+# Container image optimized for Python development
+base_container_image = "nikolaik/python-nodejs:python3.12-nodejs22"
+
+# Use host network for better performance
+use_host_network = false
+
+# Enable auto linting after editing
+enable_auto_lint = true
+
+# Initialize plugins
+initialize_plugins = true
+
+# Platform specification
+platform = "linux/amd64"
+
+# Keep runtime alive briefly for debugging
+keep_runtime_alive = false
+
+# Extra dependencies for competitive programming
+runtime_extra_deps = "numpy scipy matplotlib"
+
+#################################### Security ###################################
+# Security configuration
+##############################################################################
+[security]
+# Disable confirmation mode for autonomous operation
+confirmation_mode = false
+
+# Enable security analyzer
+enable_security_analyzer = true
+security_analyzer = "llm"
+
+#################################### Condenser #################################
+# Context management for long conversations
+##############################################################################
+[condenser]
+# Use recent events condenser to manage context
+type = "recent"
+keep_first = 2
+max_events = 50

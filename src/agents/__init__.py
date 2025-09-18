@@ -21,6 +21,14 @@ except ImportError as e:
     import logging
     logging.getLogger(__name__).warning(f"Failed to import OpenAIResponsesRunner: {e}")
 
+try:
+    from .openhands_cli import OpenHandsCLIRunner
+    OPENHANDS_AVAILABLE = True
+except ImportError as e:
+    OPENHANDS_AVAILABLE = False
+    import logging
+    logging.getLogger(__name__).warning(f"Failed to import OpenHandsCLIRunner: {e}")
+
 # Registry of available agent runners
 AGENT_RUNNERS = {
     "claude": ClaudeCodeRunner,
@@ -33,6 +41,9 @@ AGENT_RUNNERS = {
 
 if OPENAI_RESPONSES_AVAILABLE:
     AGENT_RUNNERS["openai"] = OpenAIResponsesRunner
+
+if OPENHANDS_AVAILABLE:
+    AGENT_RUNNERS["openhands"] = OpenHandsCLIRunner
 
 __all__ = [
     'AgentRunner',
@@ -47,6 +58,9 @@ __all__ = [
 # Add optional exports
 if OPENAI_RESPONSES_AVAILABLE:
     __all__.append('OpenAIResponsesRunner')
+
+if OPENHANDS_AVAILABLE:
+    __all__.append('OpenHandsCLIRunner')
 
 logger = logging.getLogger(__name__)
 
