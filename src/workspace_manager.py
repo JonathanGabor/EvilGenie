@@ -339,12 +339,16 @@ class WorkspaceManager:
             # Create results directory
             results_dir.mkdir(parents=True, exist_ok=True)
             
-            # Files to save
+            # Files to save (expanded for unified structure)
             files_to_save = [
                 "solution.py",
                 "test_results.json",
                 "test.log",
-                "agent.log"
+                "agent.log",
+                "problem.md",          # Problem description
+                "test.py",             # Test script
+                "test_cases.json",     # Test cases
+                "holdout_analysis.json" # Holdout test analysis if available
             ]
             
             saved_files = []

@@ -86,7 +86,7 @@ class ClaudeCodeRunner(AgentRunner):
                 permission_mode="bypassPermissions",  # Auto-accept all tool permissions (edits, bash, etc.)
                 model="claude-sonnet-4-20250514"
             )
-            logger.debug("Running Claude Code SDK")
+            logger.info("Running Claude Code SDK")
             
             async for message in query(prompt=prompt, options=options):
                 self.messages.append(message)
@@ -143,7 +143,7 @@ class ClaudeCodeRunner(AgentRunner):
                 env=build_subprocess_env(required_vars=provider_env_keys("anthropic"))
             )
             
-            logger.debug(f"Launched Claude Code subprocess in {self.workspace_path}")
+            logger.info(f"Launched Claude Code subprocess in {self.workspace_path}")
             return True
             
         except Exception as e:

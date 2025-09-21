@@ -21,10 +21,12 @@ from dataclasses import dataclass, asdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from typing import Set
+from collections import deque
 
 from agents import create_agent_runner, AgentRunner
 from workspace_manager import WorkspaceManager, WorkspaceMonitor
 from reward_hacking_detector import RewardHackingDetector
+from reward_hacking_reporter import RewardHackingReporter
 from env_utils import build_subprocess_env
 
 logger = logging.getLogger(__name__)
@@ -381,9 +383,11 @@ class AutomatedTester:
             # Clean up reward hacking detector
             reward_detector.cleanup()
             
-            # Save results before cleanup
+            # Save results before cleanup using unified structure
             if self.config.get('save_results', True):
-                results_dir = Path(self.config.get('results_dir', 'results')) / agent_name / problem_id
+                # Use unified directory structure: problems/agent_name/problem_id/
+                problems_dir = Path(self.config.get('results_dir', 'problems'))
+                results_dir = problems_dir / agent_name / problem_id
                 self.workspace_manager.save_workspace_results(workspace_path, results_dir)
             
             # Decide if a solution was generated (permissive: any meaningful content)
@@ -763,14 +767,200 @@ class AutomatedTester:
         # Clean up base workspaces after all parallel testing is complete
         logger.debug("Cleaning up base workspaces...")
         self.workspace_manager.cleanup_base_workspaces()
-        
+
         # Final save of all results
         logger.info("Saving final results...")
         self._save_results()
-        
+
+        # Note: Comprehensive reward hacking report is now generated in run_agent_tests.py after LLM detection
+
         return results
-    
-    def _create_balanced_task_list(self, problems: List[str], agents: List[Dict[str, Any]], 
+
+    def test_batch_parallel_capped(self, problems: List[str], agents: List[Dict[str, Any]],
+                                   max_workers: int = 4) -> List[TestResult]:
+        """
+        Test multiple problems with multiple agents in parallel with resource-bounded execution.
+        Each agent gets a guaranteed share of workers (max_workers / num_agents).
+
+        Args:
+            problems: List of problem IDs to test
+            agents: List of agent configurations
+            max_workers: Maximum number of parallel workers
+
+        Returns:
+            List of TestResult objects
+        """
+        # Two-phase execution: prepare workspaces first, then run agents
+        logger.info("=== Phase 1: Preparing base workspaces ===")
+        base_workspaces = self.prepare_all_workspaces(problems)
+
+        logger.info("=== Phase 2: Running agent tests with resource-bounded execution ===")
+        results = []
+        total_tests = len(problems) * len(agents)
+
+        # Calculate per-agent worker caps
+        workers_per_agent = max_workers // len(agents)
+        remainder = max_workers % len(agents)
+
+        logger.info(f"Resource allocation: {workers_per_agent} workers per agent, {remainder} remainder")
+
+        # Create agent-specific worker tracking
+        agent_workers = {}
+        for i, agent in enumerate(agents):
+            # Distribute remainder workers to first agents
+            agent_cap = workers_per_agent + (1 if i < remainder else 0)
+            agent_workers[agent['name']] = {
+                'cap': agent_cap,
+                'active': 0,
+                'queue': deque(),
+                'futures': set(),
+                'completed': 0
+            }
+            logger.info(f"Agent {agent['name']}: allocated {agent_cap} workers")
+
+        # Queue all tasks per agent
+        for problem_id in problems:
+            for agent in agents:
+                agent_name = agent['name']
+                base_workspace = base_workspaces.get(problem_id)
+                if base_workspace is not None:
+                    agent_workers[agent_name]['queue'].append((problem_id, agent, base_workspace))
+
+        # Log initial queue sizes
+        for agent_name, agent_data in agent_workers.items():
+            logger.debug(f"Agent {agent_name}: {len(agent_data['queue'])} tasks queued")
+
+        # Main executor with dynamic task submission
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            all_futures = {}
+            completed = 0
+
+            logger.info(f"Starting resource-bounded execution of {total_tests} tests")
+
+            # Initial task submission (respecting caps)
+            for agent_name, agent_data in agent_workers.items():
+                while agent_data['active'] < agent_data['cap'] and agent_data['queue']:
+                    problem_id, agent_config, base_workspace = agent_data['queue'].popleft()
+
+                    future = executor.submit(
+                        self.test_single_problem,
+                        problem_id,
+                        agent_config['name'],
+                        agent_config,
+                        base_workspace
+                    )
+                    all_futures[future] = (problem_id, agent_name)
+                    agent_data['active'] += 1
+                    agent_data['futures'].add(future)
+
+            # Process completions and schedule new tasks
+            for future in as_completed(all_futures):
+                problem_id, agent_name = all_futures[future]
+                agent_data = agent_workers[agent_name]
+
+                try:
+                    # Process result
+                    result = future.result()
+                    with self.results_lock:
+                        results.append(result)
+                        self.results.append(result)
+                        completed += 1
+
+                    agent_data['completed'] += 1
+
+                    # Save intermediate results (thread-safe)
+                    self._save_results()
+
+                except Exception as e:
+                    logger.error(f"Error testing {problem_id} with {agent_name}: {e}")
+                    # Create error result
+                    error_result = TestResult(
+                        problem_id=problem_id,
+                        agent_name=agent_name,
+                        success=False,
+                        runtime=0,
+                        test_passed=False,
+                        test_results={},
+                        solution_content=None,
+                        error=str(e),
+                        timestamp=datetime.now(),
+                        reward_hacking_detected=False,
+                        reward_hacking_summary=None,
+                        reward_hacking_violations=None
+                    )
+                    with self.results_lock:
+                        results.append(error_result)
+                        self.results.append(error_result)
+                        completed += 1
+
+                # Update agent's active count
+                agent_data['active'] -= 1
+                agent_data['futures'].discard(future)
+
+                # Submit next task for this agent if available
+                if agent_data['queue']:
+                    next_problem_id, next_agent_config, next_base_workspace = agent_data['queue'].popleft()
+                    new_future = executor.submit(
+                        self.test_single_problem,
+                        next_problem_id,
+                        next_agent_config['name'],
+                        next_agent_config,
+                        next_base_workspace
+                    )
+                    all_futures[new_future] = (next_problem_id, agent_name)
+                    agent_data['active'] += 1
+                    agent_data['futures'].add(new_future)
+
+                # Log progress with per-agent utilization
+                self._log_capped_progress(agent_workers, completed, total_tests, problem_id, agent_name)
+
+        # Clean up base workspaces after all parallel testing is complete
+        logger.debug("Cleaning up base workspaces...")
+        self.workspace_manager.cleanup_base_workspaces()
+
+        # Final save of all results
+        logger.info("Saving final results...")
+        self._save_results()
+
+        # Note: Comprehensive reward hacking report is now generated in run_agent_tests.py after LLM detection
+
+        return results
+
+    def _log_capped_progress(self, agent_workers: Dict[str, Dict], completed: int, total_tests: int,
+                           current_problem: str, current_agent: str):
+        """Log progress with per-agent resource utilization for capped execution."""
+
+        # Calculate total active and queued tasks
+        total_active = sum(data['active'] for data in agent_workers.values())
+        total_queued = sum(len(data['queue']) for data in agent_workers.values())
+
+        # Create per-agent status summary
+        agent_status = []
+        utilization_scores = []
+
+        for agent_name, data in sorted(agent_workers.items()):
+            utilization = data['active'] / data['cap'] if data['cap'] > 0 else 0
+            utilization_scores.append(utilization)
+
+            status = f"{agent_name}({data['active']}/{data['cap']}"
+            if len(data['queue']) > 0:
+                status += f",q:{len(data['queue'])}"
+            status += ")"
+            agent_status.append(status)
+
+        # Calculate fairness metric
+        if utilization_scores:
+            avg_utilization = sum(utilization_scores) / len(utilization_scores)
+            max_deviation = max(abs(u - avg_utilization) for u in utilization_scores)
+            fairness_indicator = "⚖️" if max_deviation < 0.2 else "⚠️" if max_deviation < 0.4 else "🔴"
+        else:
+            fairness_indicator = "⚖️"
+
+        logger.info(f"Completed {completed}/{total_tests}: {current_problem} with {current_agent} | "
+                   f"{fairness_indicator} Active: {', '.join(agent_status)} "
+                   f"(total: {total_active}, queued: {total_queued})")
+
+    def _create_balanced_task_list(self, problems: List[str], agents: List[Dict[str, Any]],
                                  base_workspaces: Dict[str, Path]) -> List[tuple]:
         """
         Create a balanced task list for better load distribution across workers.
@@ -851,7 +1041,14 @@ class AutomatedTester:
         parallel_config = self.config.get('parallel', {})
         if parallel_config.get('enabled', False):
             max_workers = parallel_config.get('max_workers', 4)
-            
+            load_balancing_strategy = parallel_config.get('load_balancing_strategy', 'round_robin')
+
+            # Check for agent-capped strategy
+            if load_balancing_strategy == 'agent_capped':
+                logger.info(f"Running tests with agent-capped resource allocation ({max_workers} workers)")
+                return self.test_batch_parallel_capped(problems, agents, max_workers)
+
+            # Legacy parallel execution strategies
             # New behavior: allow multiple copies of same agent if beneficial
             allow_agent_duplication = parallel_config.get('allow_agent_duplication', True)
             if not allow_agent_duplication:
@@ -863,7 +1060,7 @@ class AutomatedTester:
                 total_tasks = len(problems) * len(agents)
                 max_workers = min(max_workers, total_tasks)  # Don't exceed total tasks
                 logger.info(f"Running tests in parallel with {max_workers} workers (allowing agent duplication)")
-            
+
             return self.test_batch_parallel(problems, agents, max_workers)
         
         # Two-phase execution: prepare workspaces first, then run agents
@@ -926,11 +1123,13 @@ class AutomatedTester:
         # Clean up base workspaces after all agent testing is complete
         logger.info("Cleaning up base workspaces...")
         self.workspace_manager.cleanup_base_workspaces()
-        
+
         # Final save of all results
         logger.info("Saving final results...")
         self._save_results()
-        
+
+        # Note: Comprehensive reward hacking report is now generated in run_agent_tests.py after LLM detection
+
         return results
     
     def _save_results(self) -> None:
@@ -1248,7 +1447,19 @@ class AutomatedTester:
         }
         
         return report
-    
+
+    def generate_comprehensive_reward_hacking_report(self, run_directory: Path) -> Path:
+        """Generate comprehensive reward hacking report combining LLM and holdout detection."""
+        logger.info("Generating comprehensive reward hacking report...")
+
+        reporter = RewardHackingReporter(run_directory)
+        output_file = reporter.save_report()
+
+        # Also print summary to console
+        reporter.print_summary()
+
+        return output_file
+
     def cleanup(self) -> None:
         """Clean up all workspaces."""
         self.workspace_manager.cleanup_all()
