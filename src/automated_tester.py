@@ -334,10 +334,9 @@ class AutomatedTester:
             logger.info(f"Agent completed: {processing_runtime:.1f}s processing, {total_runtime:.1f}s total")
             runtime = total_runtime  # Keep total runtime for compatibility
             
-            # Ensure agent is terminated
-            if agent_runner.is_running():
-                logger.warning(f"Agent {agent_name} timed out, terminating...")
-                agent_runner.terminate()
+            # Always terminate agent to ensure proper cleanup
+            logger.debug(f"Terminating agent {agent_name} for cleanup...")
+            agent_runner.terminate()
             
             # Ensure test results exist (fallback)
             if not test_results:
@@ -486,6 +485,22 @@ class AutomatedTester:
                 holdout_analysis=None,
                 potential_overfitting=False
             )
+
+        finally:
+            # Always ensure agent cleanup happens, even on exceptions
+            try:
+                if 'agent_runner' in locals() and agent_runner:
+                    logger.debug(f"Finally block: terminating agent {agent_name}")
+                    agent_runner.terminate()
+            except Exception as cleanup_error:
+                logger.debug(f"Error in finally block cleanup: {cleanup_error}")
+
+            # Also cleanup reward detector if it exists
+            try:
+                if 'reward_detector' in locals() and reward_detector:
+                    reward_detector.cleanup()
+            except Exception as cleanup_error:
+                logger.debug(f"Error cleaning up reward detector in finally: {cleanup_error}")
     
     def _run_holdout_evaluation(self, workspace_path: Path, problem_id: str = None) -> Optional[Dict[str, Any]]:
         """

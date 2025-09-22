@@ -7,6 +7,9 @@ import os
 import time
 import logging
 import threading
+import signal
+import subprocess
+import psutil
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -53,7 +56,9 @@ class OpenHandsCLIRunner(AgentRunner):
         self.is_complete = False
         self.state = None
         self.events = []
-        
+        self.runtime_pid = None  # Track runtime process PID
+        self.child_pids = set()  # Track child processes
+
         if not OPENHANDS_AVAILABLE:
             raise ImportError("OpenHands is not available. Please install it or check the path.")
     
@@ -259,7 +264,68 @@ Your solution should be efficient and correct. Use standard algorithms and data 
             pass
         
         return prompt
-    
+
+    def _track_child_processes(self) -> None:
+        """Track child processes spawned by OpenHands runtime."""
+        try:
+            current_pid = os.getpid()
+            current_process = psutil.Process(current_pid)
+
+            # Find all child processes
+            for child in current_process.children(recursive=True):
+                try:
+                    cmdline = ' '.join(child.cmdline())
+                    # Track Jupyter and OpenHands related processes
+                    if any(keyword in cmdline for keyword in [
+                        'jupyter', 'kernelgateway', 'ipykernel',
+                        'openhands.runtime.action_execution_server'
+                    ]):
+                        self.child_pids.add(child.pid)
+                        logger.debug(f"Tracking child process {child.pid}: {cmdline}")
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except Exception as e:
+            logger.debug(f"Error tracking child processes: {e}")
+
+    def _kill_process_tree(self, pid: int) -> None:
+        """Kill a process and all its children."""
+        try:
+            parent = psutil.Process(pid)
+            children = parent.children(recursive=True)
+
+            # Kill children first
+            for child in children:
+                try:
+                    logger.debug(f"Terminating child process {child.pid}")
+                    child.terminate()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+            # Wait for children to terminate
+            gone, alive = psutil.wait_procs(children, timeout=3)
+
+            # Force kill any remaining children
+            for p in alive:
+                try:
+                    logger.debug(f"Force killing child process {p.pid}")
+                    p.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+            # Kill parent
+            try:
+                logger.debug(f"Terminating parent process {pid}")
+                parent.terminate()
+                parent.wait(timeout=3)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+                try:
+                    parent.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+            logger.debug(f"Process {pid} not found or access denied: {e}")
+
     async def _run_openhands_async(self, prompt: str) -> None:
         """Run OpenHands controller asynchronously."""
         try:
@@ -278,7 +344,10 @@ Your solution should be efficient and correct. Use standard algorithms and data 
             # Connect runtime using proper evaluation harness pattern
             call_async_from_sync(self.runtime.connect)
             logger.debug("OpenHands runtime connected")
-            
+
+            # Track child processes after runtime connection
+            self._track_child_processes()
+
             # Create initial user action with the prompt (new API)
             initial_action = MessageAction(content=prompt)
             
@@ -300,12 +369,22 @@ Your solution should be efficient and correct. Use standard algorithms and data 
             logger.error(f"Full traceback: {traceback.format_exc()}")
             self.is_complete = True
         finally:
-            # Clean up runtime
+            # Clean up runtime properly - try async close first, then sync close
             if self.runtime:
                 try:
-                    self.runtime.close()
+                    # Try async close if available
+                    if hasattr(self.runtime, 'aclose'):
+                        await self.runtime.aclose()
+                        logger.debug("Runtime closed with async aclose")
+                    elif hasattr(self.runtime, 'close'):
+                        # Fall back to sync close
+                        self.runtime.close()
+                        logger.debug("Runtime closed with sync close")
                 except Exception as e:
                     logger.warning(f"Error closing runtime: {e}")
+
+            # Track any new child processes that might have been spawned
+            self._track_child_processes()
     
     def _user_response_fn(self, state) -> str:
         """Fake user response function for autonomous operation."""
@@ -356,27 +435,87 @@ Your solution should be efficient and correct. Use standard algorithms and data 
     def terminate(self) -> None:
         """Terminate the OpenHands process."""
         try:
+            logger.debug("Starting OpenHands termination process")
             self.is_complete = True
-            
-            # Close runtime if it exists
+
+            # Try to close runtime gracefully first
             if self.runtime:
                 try:
-                    # Note: We can't easily call async aclose from sync context
-                    # The runtime cleanup will happen in the async context
-                    pass
+                    # Try sync close method if available
+                    if hasattr(self.runtime, 'close'):
+                        self.runtime.close()
+                        logger.debug("Runtime closed successfully")
                 except Exception as e:
                     logger.warning(f"Error during runtime cleanup: {e}")
-            
+
             # Wait for thread to complete (with timeout)
             if self.controller_thread and self.controller_thread.is_alive():
                 self.controller_thread.join(timeout=5.0)
                 if self.controller_thread.is_alive():
                     logger.warning("OpenHands thread did not terminate gracefully")
-            
+                    # Thread didn't terminate, we need to force cleanup
+                    self._force_cleanup_processes()
+
+            # Clean up any tracked child processes
+            self._cleanup_child_processes()
+
             logger.debug("OpenHands terminated")
-            
+
         except Exception as e:
             logger.error(f"Error terminating OpenHands: {e}")
+            # Force cleanup even if there was an error
+            self._force_cleanup_processes()
+
+    def _force_cleanup_processes(self) -> None:
+        """Force cleanup of all related processes."""
+        logger.debug("Starting force cleanup of processes")
+
+        # Kill all tracked child processes
+        for pid in list(self.child_pids):
+            try:
+                self._kill_process_tree(pid)
+            except Exception as e:
+                logger.debug(f"Error killing process tree {pid}: {e}")
+
+        # Find and kill any remaining OpenHands/Jupyter processes
+        try:
+            current_pid = os.getpid()
+            current_process = psutil.Process(current_pid)
+
+            for child in current_process.children(recursive=True):
+                try:
+                    cmdline = ' '.join(child.cmdline())
+                    if any(keyword in cmdline for keyword in [
+                        'jupyter', 'kernelgateway', 'ipykernel',
+                        'openhands.runtime.action_execution_server'
+                    ]):
+                        logger.debug(f"Force killing orphaned process {child.pid}: {cmdline}")
+                        child.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+        except Exception as e:
+            logger.debug(f"Error during force cleanup: {e}")
+
+    def _cleanup_child_processes(self) -> None:
+        """Clean up tracked child processes gracefully."""
+        logger.debug(f"Cleaning up {len(self.child_pids)} tracked child processes")
+
+        for pid in list(self.child_pids):
+            try:
+                process = psutil.Process(pid)
+                # First try graceful termination
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                    logger.debug(f"Process {pid} terminated gracefully")
+                except psutil.TimeoutExpired:
+                    # Force kill if it doesn't terminate
+                    process.kill()
+                    logger.debug(f"Process {pid} force killed")
+                self.child_pids.discard(pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                # Process already gone
+                self.child_pids.discard(pid)
     
     def is_ready(self) -> bool:
         """Check if OpenHands is ready (always ready once launched)."""
