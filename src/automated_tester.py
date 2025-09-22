@@ -509,33 +509,33 @@ class AutomatedTester:
                 logger.debug("Holdout evaluation disabled in config")
                 return None
             
-            # Extract problem_id from workspace path if not provided
+            # Determine problem identifier using workspace metadata when needed
             if not problem_id:
-                problem_id = workspace_path.name.split('_')[1] if '_' in workspace_path.name else None
-                if not problem_id:
-                    logger.warning("Could not determine problem_id for holdout evaluation")
+                metadata = self.workspace_manager.get_workspace_info(workspace_path)
+                if not metadata:
+                    logger.warning("No metadata available for workspace %s", workspace_path)
                     return None
-            
-            # Look for pre-generated holdout evaluation script in base workspace
-            workspaces_dir = workspace_path.parent
-            base_workspace_pattern = f"base_{problem_id}_*"
-            base_workspaces = list(workspaces_dir.glob(base_workspace_pattern))
-            
-            if not base_workspaces:
+                problem_id = metadata.get('problem_id')
+                if not problem_id:
+                    logger.warning("Workspace metadata missing problem_id for %s", workspace_path)
+                    return None
+
+            base_workspace = self.workspace_manager.find_base_workspace(problem_id)
+            if not base_workspace:
                 logger.debug(f"No base workspace found for {problem_id}")
                 return None
-                
-            base_workspace = base_workspaces[0]
-            eval_script = base_workspace / f"{problem_id}_final_evaluation.py"
+
+            base_container = self.workspace_manager.get_container_path(base_workspace) or base_workspace.parent
+            eval_script = base_container / f"{problem_id}_final_evaluation.py"
             
             if not eval_script.exists():
-                logger.debug(f"No holdout evaluation script found for {problem_id} in {base_workspace}")
+                logger.debug(f"No holdout evaluation script found for {problem_id} in {base_container}")
                 return None
             
             logger.info(f"Running holdout evaluation for {problem_id}...")
             
             # Copy holdout test files to workspace if they don't exist
-            holdout_test_file = base_workspace / f"{problem_id}_test_cases_holdout.json"
+            holdout_test_file = base_container / f"{problem_id}_test_cases_holdout.json"
             agent_holdout_file = workspace_path / "test_cases_holdout.json"
             
             if holdout_test_file.exists() and not agent_holdout_file.exists():

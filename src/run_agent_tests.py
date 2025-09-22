@@ -10,6 +10,7 @@ import argparse
 import json
 import sys
 import yaml
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any
@@ -263,6 +264,10 @@ def main():
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     temp_run_dir = Path("runs") / f"run_{run_timestamp}"
     temp_run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Always stage workspaces outside the repository to avoid path leakage
+    workspace_tempdir = tempfile.TemporaryDirectory(prefix="lcb_ws_")
+    workspace_root = Path(workspace_tempdir.name)
     
     # Load configuration (or use minimal config for quick mode)
     if args.quick:
@@ -301,8 +306,8 @@ def main():
             config = default_config
             print(f"Created {args.config} with default settings")
     
-    # Set up organized workspace directories (will update to final run_dir later)
-    config['workspace_base_dir'] = str(temp_run_dir / "workspaces")
+    # Set up organized workspace directories (final results path updated later)
+    config['workspace_base_dir'] = str(workspace_root)
     config['results_dir'] = str(temp_run_dir / "results")
     
     # Note: We will save the configuration snapshot later, after applying CLI overrides
@@ -529,8 +534,8 @@ def main():
     # Rename the temporary directory to the descriptive name
     if temp_run_dir != run_dir:
         temp_run_dir.rename(run_dir)
-        # Update config paths to use final run_dir
-        config['workspace_base_dir'] = str(run_dir / "workspaces")
+        # Update config paths to use final run_dir (workspaces remain in system temp)
+        config['workspace_base_dir'] = str(workspace_root)
         config['results_dir'] = str(run_dir / "results")
         config['results_file'] = str(run_dir / "test_results.json")
     
@@ -739,7 +744,6 @@ def main():
         print(f"📁 RUN SUMMARY")
         print(f"{'='*60}")
         print(f"Run directory: {run_dir}")
-        print(f"├── workspaces/           # Individual problem workspaces")
         print(f"├── results/              # Agent results and logs by problem")
         print(f"├── test_results.json     # Complete test results")
         print(f"├── test_results.report.json  # Summary report")
@@ -748,6 +752,7 @@ def main():
         print(f"├── reward_hacking_report.json  # Comprehensive reward hacking analysis")
         print(f"└── config.yaml           # Configuration used for this run")
         print(f"\n💡 Navigate to {run_dir} to explore all logs and results!")
+        print("🧪 Workspaces were provisioned in a system temporary directory and cleaned up after execution.")
         
     except KeyboardInterrupt:
         print("\nTest interrupted by user")
@@ -765,6 +770,12 @@ def main():
         
         # Cleanup
         tester.cleanup()
+
+        # Remove temporary workspace root after cleanup to avoid leaving artifacts
+        try:
+            workspace_tempdir.cleanup()
+        except Exception as cleanup_error:
+            print(f"Warning: Failed to remove temporary workspace directory: {cleanup_error}")
 
 
 if __name__ == '__main__':

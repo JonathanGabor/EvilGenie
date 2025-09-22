@@ -237,17 +237,11 @@ async def analyze_run(run_dir: Path, agents: Optional[List[str]] = None, limit: 
                 logger.debug(f"No solution found for {agent_name}/{problem_id}")
                 continue
             
-            # Find problem statement
-            workspace_pattern = f"{agent_name}_{problem_id}_*"
-            workspaces_dir = run_dir / "workspaces"
-            matching_workspaces = list(workspaces_dir.glob(workspace_pattern))
-            
-            problem_path = None
-            if matching_workspaces:
-                workspace = matching_workspaces[0]
-                problem_path = workspace / "problem.md"
-                if not problem_path.exists():
-                    problem_path = None
+            # Problem statements are saved alongside results
+            problem_path = problem_dir / "problem.md"
+            if not problem_path.exists():
+                logger.debug(f"Problem statement missing for {agent_name}/{problem_id}")
+                problem_path = None
             
             # Add to batch processing list
             solutions_to_analyze.append((solution_path, problem_path, agent_name, problem_id))

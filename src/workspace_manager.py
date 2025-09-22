@@ -15,12 +15,18 @@ import subprocess
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 from datetime import datetime
 
 # Import problem setup functions
 from problem_setup import setup_problem_by_id
 from env_utils import build_subprocess_env
+from sandbox_utils import (
+    generate_workspace_slug,
+    create_sandbox_profile,
+    cleanup_sandbox_profile,
+    sandbox_supported,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +52,69 @@ class WorkspaceManager:
             
         self.cleanup = cleanup
         self.release_version = release_version
-        self.active_workspaces = {}
-        logger.debug(f"Workspace manager initialized with base dir: {self.base_dir}, release: {self.release_version}")
+        self.active_workspaces: Dict[Path, Dict[str, Any]] = {}
+        self._sandbox_available = sandbox_supported()
+        logger.debug(
+            "Workspace manager initialized with base dir: %s, release: %s, sandbox: %s",
+            self.base_dir,
+            self.release_version,
+            self._sandbox_available,
+        )
+
+    def _allocate_container_path(self, prefix: str = "ws") -> Path:
+        """Return a unique directory under the base dir for a workspace container."""
+        for _ in range(64):
+            slug = generate_workspace_slug(prefix=prefix)
+            candidate = self.base_dir / slug
+            if not candidate.exists():
+                return candidate
+        raise RuntimeError("Unable to allocate unique workspace directory")
+
+    def _unpack_setup_result(self, result: Any) -> Tuple[Path, List[Any], Optional[Any]]:
+        """Normalize setup_problem_by_id return value."""
+        if result is None:
+            raise ValueError("Problem setup returned None")
+        if not isinstance(result, tuple):
+            raise TypeError("Unexpected setup result type")
+
+        if len(result) == 3:
+            problem_dir, files, holdout_data = result
+        elif len(result) == 2:
+            problem_dir, files = result
+            holdout_data = None
+        else:
+            raise ValueError("Unexpected setup result length")
+
+        return Path(problem_dir), list(files), holdout_data
+
+    def _anonymize_problem_dir(self, problem_dir: Path) -> Path:
+        """Rename the created problem directory to a generic workspace name."""
+        parent = problem_dir.parent
+        target = parent / "workspace"
+        if target.exists():
+            raise RuntimeError(f"Workspace directory already exists: {target}")
+        problem_dir.rename(target)
+        return target
+
+    def _setup_sandbox_profile(self, workspace_path: Path) -> Optional[Path]:
+        """Create a sandbox profile for the workspace if supported."""
+        if not self._sandbox_available:
+            return None
+        try:
+            profile_path = create_sandbox_profile(workspace_path)
+            logger.debug("Created sandbox profile at %s", profile_path)
+            return profile_path
+        except Exception as exc:
+            logger.warning("Failed to create sandbox profile for %s: %s", workspace_path, exc)
+            return None
+
+    def _cleanup_container(self, container_path: Path) -> None:
+        """Best-effort removal of a workspace container directory."""
+        try:
+            if container_path.exists():
+                shutil.rmtree(container_path)
+        except Exception as exc:
+            logger.warning("Failed to cleanup container %s: %s", container_path, exc)
     
     def create_workspace(self, problem_id: str, agent_name: str, holdout_config: dict = None) -> Optional[Path]:
         """
@@ -60,49 +127,67 @@ class WorkspaceManager:
         Returns:
             Path to the created workspace or None if failed
         """
+        container_path: Optional[Path] = None
         try:
-            # Create unique workspace name
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            workspace_name = f"{agent_name}_{problem_id}_{timestamp}"
-            workspace_path = self.base_dir / workspace_name
-            
-            # Use direct function call instead of subprocess
-            logger.debug(f"Setting up problem {problem_id} in {workspace_path}")
+            # Prepare anonymous container for workspace contents
+            container_path = self._allocate_container_path()
+            container_path.mkdir(parents=True, exist_ok=False)
+
+            logger.debug("Setting up problem %s in %s", problem_id, container_path)
             result = setup_problem_by_id(
                 problem_id=problem_id,
-                output_dir=str(workspace_path.absolute()),
-                release_version=self.release_version,  # Use configured release version directly
+                output_dir=str(container_path),
+                release_version=self.release_version,
                 verbose=True,
-                holdout_config=holdout_config
+                holdout_config=holdout_config,
             )
-            
-            if result is None:
-                logger.error(f"Failed to setup problem workspace for {problem_id}")
+
+            try:
+                problem_dir, _files, _holdout = self._unpack_setup_result(result)
+            except Exception as exc:
+                logger.error("Failed to setup problem workspace for %s: %s", problem_id, exc)
+                self._cleanup_container(container_path)
                 return None
-            
-            problem_dir, files = result
-            actual_workspace = Path(problem_dir)
-            
+
+            actual_workspace = self._anonymize_problem_dir(problem_dir)
+
             # Verify the required files exist
             required_files = ["problem.md", "solution.py", "test.py", "test_cases.json"]
             for file_name in required_files:
                 if not (actual_workspace / file_name).exists():
-                    logger.error(f"Required file {file_name} not found in {actual_workspace}")
+                    logger.error("Required file %s not found in %s", file_name, actual_workspace)
+                    self._cleanup_container(container_path)
                     return None
-            
-            # Store workspace info
-            self.active_workspaces[actual_workspace] = {
+
+            sandbox_profile = self._setup_sandbox_profile(actual_workspace)
+            created_at = datetime.now()
+            label = f"{agent_name}_{problem_id}_{created_at.strftime('%Y%m%d_%H%M%S')}"
+
+            metadata = {
                 "problem_id": problem_id,
                 "agent_name": agent_name,
-                "created_at": datetime.now(),
-                "status": "active"
+                "created_at": created_at,
+                "status": "active",
+                "container_path": str(actual_workspace.parent),
+                "container_slug": actual_workspace.parent.name,
+                "workspace_slug": actual_workspace.name,
+                "sandbox_profile": str(sandbox_profile) if sandbox_profile else None,
+                "display_name": label,
             }
-            
-            logger.debug(f"Created workspace: {actual_workspace}")
+
+            self.active_workspaces[actual_workspace] = metadata
+            logger.debug("Created workspace %s (container %s)", actual_workspace, container_path)
             return actual_workspace
-            
+
+        except FileExistsError:
+            logger.error("Workspace container already exists for %s", problem_id)
+            if container_path:
+                self._cleanup_container(container_path)
+            return None
         except Exception as e:
-            logger.error(f"Failed to create workspace: {e}")
+            logger.error("Failed to create workspace: %s", e)
+            if container_path:
+                self._cleanup_container(container_path)
             return None
     
     def create_base_workspace(self, problem_id: str, holdout_config: dict = None) -> Optional[Path]:
@@ -116,61 +201,69 @@ class WorkspaceManager:
         Returns:
             Path to the created base workspace or None if failed
         """
+        container_path: Optional[Path] = None
         try:
-            # Create base workspace name without agent
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            workspace_name = f"base_{problem_id}_{timestamp}"
-            workspace_path = self.base_dir / workspace_name
-            
-            # Use direct function call to setup problem
-            logger.debug(f"Setting up base workspace for problem {problem_id} in {workspace_path}")
+            container_path = self._allocate_container_path()
+            container_path.mkdir(parents=True, exist_ok=False)
+
+            logger.debug("Setting up base workspace for problem %s in %s", problem_id, container_path)
             result = setup_problem_by_id(
                 problem_id=problem_id,
-                output_dir=str(workspace_path.absolute()),
+                output_dir=str(container_path),
                 release_version=self.release_version,
                 verbose=True,
-                holdout_config=holdout_config
+                holdout_config=holdout_config,
             )
-            
-            if result is None:
-                logger.error(f"Failed to setup base workspace for {problem_id}")
+
+            try:
+                problem_dir, _files, holdout_data = self._unpack_setup_result(result)
+            except Exception as exc:
+                logger.error("Failed to setup base workspace for %s: %s", problem_id, exc)
+                self._cleanup_container(container_path)
                 return None
-            
-            # Handle new return format with holdout data
-            if len(result) == 3:
-                problem_dir, _, holdout_data = result
-            else:
-                problem_dir, _ = result
-                holdout_data = None
-            
-            actual_workspace = Path(problem_dir)
-            
-            # Create holdout files one level above the workspace if available
+
+            actual_workspace = self._anonymize_problem_dir(problem_dir)
+
             if holdout_data:
-                holdout_dir = actual_workspace.parent
-                self._create_holdout_files(holdout_dir, problem_id, holdout_data)
-            
-            # Verify the required files exist
+                self._create_holdout_files(actual_workspace.parent, problem_id, holdout_data)
+
             required_files = ["problem.md", "solution.py", "test.py", "test_cases.json"]
             for file_name in required_files:
                 if not (actual_workspace / file_name).exists():
-                    logger.error(f"Required file {file_name} not found in {actual_workspace}")
+                    logger.error("Required file %s not found in %s", file_name, actual_workspace)
+                    self._cleanup_container(container_path)
                     return None
-            
-            # Store workspace info with special base workspace marker
-            self.active_workspaces[actual_workspace] = {
+
+            sandbox_profile = self._setup_sandbox_profile(actual_workspace)
+            created_at = datetime.now()
+            label = f"base_{problem_id}_{created_at.strftime('%Y%m%d_%H%M%S')}"
+
+            metadata = {
                 "problem_id": problem_id,
-                "agent_name": "base",  # Special marker for base workspace
-                "created_at": datetime.now(),
+                "agent_name": "base",
+                "created_at": created_at,
                 "status": "base",
-                "workspace_type": "base"
+                "workspace_type": "base",
+                "container_path": str(actual_workspace.parent),
+                "container_slug": actual_workspace.parent.name,
+                "workspace_slug": actual_workspace.name,
+                "sandbox_profile": str(sandbox_profile) if sandbox_profile else None,
+                "display_name": label,
             }
-            
-            logger.debug(f"Created base workspace: {actual_workspace}")
+
+            self.active_workspaces[actual_workspace] = metadata
+            logger.debug("Created base workspace %s (container %s)", actual_workspace, container_path)
             return actual_workspace
-            
+
+        except FileExistsError:
+            logger.error("Base workspace container already exists for %s", problem_id)
+            if container_path:
+                self._cleanup_container(container_path)
+            return None
         except Exception as e:
-            logger.error(f"Failed to create base workspace: {e}")
+            logger.error("Failed to create base workspace: %s", e)
+            if container_path:
+                self._cleanup_container(container_path)
             return None
     
     def _create_holdout_files(self, holdout_dir: Path, problem_id: str, holdout_data: dict) -> None:
@@ -201,49 +294,78 @@ class WorkspaceManager:
         Returns:
             Path to the duplicated workspace or None if failed
         """
+        container_path: Optional[Path] = None
         try:
             if not base_workspace.exists():
-                logger.error(f"Base workspace does not exist: {base_workspace}")
+                logger.error("Base workspace does not exist: %s", base_workspace)
                 return None
-            
-            # Get problem_id from base workspace info
+
             base_info = self.active_workspaces.get(base_workspace)
             if not base_info:
-                logger.error(f"Base workspace info not found: {base_workspace}")
+                logger.error("Base workspace info not found: %s", base_workspace)
                 return None
-            
-            problem_id = base_info["problem_id"]
-            
-            # Create agent-specific workspace name
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            workspace_name = f"{agent_name}_{problem_id}_{timestamp}"
-            agent_workspace = self.base_dir / workspace_name
-            
-            # Copy the entire base workspace to agent workspace
-            logger.debug(f"Duplicating workspace from {base_workspace} to {agent_workspace}")
+
+            problem_id = base_info.get("problem_id")
+
+            container_path = self._allocate_container_path()
+            container_path.mkdir(parents=True, exist_ok=False)
+            agent_workspace = container_path / "workspace"
+
+            logger.debug("Duplicating workspace from %s to %s", base_workspace, agent_workspace)
             shutil.copytree(base_workspace, agent_workspace)
-            
-            # Store workspace info for the agent workspace
-            self.active_workspaces[agent_workspace] = {
+
+            sandbox_profile = self._setup_sandbox_profile(agent_workspace)
+            created_at = datetime.now()
+            label = f"{agent_name}_{problem_id}_{created_at.strftime('%Y%m%d_%H%M%S')}"
+
+            metadata = {
                 "problem_id": problem_id,
                 "agent_name": agent_name,
-                "created_at": datetime.now(),
+                "created_at": created_at,
                 "status": "active",
                 "workspace_type": "agent",
-                "base_workspace": str(base_workspace)
+                "base_workspace": str(base_workspace),
+                "container_path": str(container_path),
+                "container_slug": container_path.name,
+                "workspace_slug": agent_workspace.name,
+                "sandbox_profile": str(sandbox_profile) if sandbox_profile else None,
+                "display_name": label,
             }
-            
-            logger.debug(f"Created agent workspace: {agent_workspace}")
+
+            self.active_workspaces[agent_workspace] = metadata
+            logger.debug("Created agent workspace %s (container %s)", agent_workspace, container_path)
             return agent_workspace
-            
+
+        except FileExistsError:
+            logger.error("Agent workspace container already exists for %s", agent_name)
+            if container_path:
+                self._cleanup_container(container_path)
+            return None
         except Exception as e:
-            logger.error(f"Failed to duplicate workspace: {e}")
+            logger.error("Failed to duplicate workspace: %s", e)
+            if container_path:
+                self._cleanup_container(container_path)
             return None
     
     def get_workspace_info(self, workspace_path: Path) -> Optional[Dict[str, Any]]:
         """Get information about a workspace."""
         return self.active_workspaces.get(workspace_path)
-    
+
+    def get_container_path(self, workspace_path: Path) -> Optional[Path]:
+        """Return the container directory for a workspace, if known."""
+        metadata = self.get_workspace_info(workspace_path)
+        if not metadata:
+            return None
+        container_str = metadata.get("container_path")
+        return Path(container_str) if container_str else workspace_path.parent
+
+    def find_base_workspace(self, problem_id: str) -> Optional[Path]:
+        """Locate an active base workspace for the given problem."""
+        for path, info in self.active_workspaces.items():
+            if info.get("workspace_type") == "base" and info.get("problem_id") == problem_id:
+                return path
+        return None
+
     def list_active_workspaces(self) -> List[Dict[str, Any]]:
         """List all active workspaces."""
         workspaces = []
@@ -264,16 +386,31 @@ class WorkspaceManager:
             True if successful, False otherwise
         """
         try:
+            metadata = self.active_workspaces.get(workspace_path, {})
+            sandbox_profile = metadata.get("sandbox_profile")
+            container_str = metadata.get("container_path")
+            container_path = Path(container_str) if container_str else workspace_path.parent
+
+            if sandbox_profile:
+                cleanup_sandbox_profile(Path(sandbox_profile))
+
             if workspace_path.exists():
                 shutil.rmtree(workspace_path)
-                logger.debug(f"Cleaned up workspace: {workspace_path}")
-            
-            # Remove from active workspaces
+                logger.debug("Cleaned up workspace: %s", workspace_path)
+
+            # Attempt to remove the container directory to drop holdout files as well
+            if container_path and container_path.exists() and container_path != self.base_dir:
+                try:
+                    shutil.rmtree(container_path)
+                    logger.debug("Removed workspace container: %s", container_path)
+                except Exception as exc:
+                    logger.warning("Failed to remove workspace container %s: %s", container_path, exc)
+
             if workspace_path in self.active_workspaces:
                 del self.active_workspaces[workspace_path]
-                
+
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to cleanup workspace {workspace_path}: {e}")
             return False
@@ -338,7 +475,9 @@ class WorkspaceManager:
         try:
             # Create results directory
             results_dir.mkdir(parents=True, exist_ok=True)
-            
+
+            metadata = self.get_workspace_info(workspace_path) or {}
+
             # Files to save (expanded for unified structure)
             files_to_save = [
                 "solution.py",
@@ -347,10 +486,10 @@ class WorkspaceManager:
                 "agent.log",
                 "problem.md",          # Problem description
                 "test.py",             # Test script
-                "test_cases.json",     # Test cases
+                "test_cases.json",     # Visible test cases
                 "holdout_analysis.json" # Holdout test analysis if available
             ]
-            
+
             saved_files = []
             for filename in files_to_save:
                 src_file = workspace_path / filename
@@ -358,9 +497,25 @@ class WorkspaceManager:
                     dst_file = results_dir / filename
                     shutil.copy2(src_file, dst_file)
                     saved_files.append(filename)
-            
+
+            # Capture holdout resources from the container if they exist
+            problem_id = metadata.get("problem_id")
+            container_str = metadata.get("container_path")
+            if problem_id and container_str:
+                container_path = Path(container_str)
+                holdout_sources = {
+                    f"{problem_id}_test_cases_holdout.json": "test_cases_holdout.json",
+                    f"{problem_id}_final_evaluation.py": "final_evaluation.py",
+                }
+                for source_name, dest_name in holdout_sources.items():
+                    src_file = container_path / source_name
+                    if src_file.exists():
+                        dst_file = results_dir / dest_name
+                        shutil.copy2(src_file, dst_file)
+                        if dest_name not in saved_files:
+                            saved_files.append(dest_name)
+
             # Save workspace metadata
-            metadata = self.get_workspace_info(workspace_path)
             if metadata:
                 metadata["saved_files"] = saved_files
                 metadata_file = results_dir / "workspace_metadata.json"
@@ -486,9 +641,24 @@ class WorkspaceMonitor:
     def run_tests(self) -> Dict[str, Any]:
         """Run tests and return results."""
         try:
-            # Run test.py
+            sandbox_profile = self.workspace_path.parent / f".sandbox_{self.workspace_path.name}.sb"
+            use_sandbox = sandbox_profile.exists() and sandbox_supported()
+
+            if use_sandbox:
+                logger.debug("Running tests with sandbox profile: %s", sandbox_profile)
+                cmd = [
+                    "sandbox-exec",
+                    "-f",
+                    str(sandbox_profile),
+                    "python",
+                    "test.py",
+                ]
+            else:
+                logger.debug("Running tests without sandbox; profile missing or unsupported")
+                cmd = ["python", "test.py"]
+
             result = subprocess.run(
-                ["python", "test.py"],
+                cmd,
                 cwd=str(self.workspace_path),
                 capture_output=True,
                 text=True,
