@@ -47,7 +47,7 @@ except ImportError as e:
 
 class OpenHandsCLIRunner(AgentRunner):
     """Runner for OpenHands using Python SDK."""
-    
+
     def __init__(self, workspace_path: str, config: Dict[str, Any]):
         super().__init__(workspace_path, config)
         self.oh_config = None
@@ -58,6 +58,8 @@ class OpenHandsCLIRunner(AgentRunner):
         self.events = []
         self.runtime_pid = None  # Track runtime process PID
         self.child_pids = set()  # Track child processes
+        self.event_loop = None  # Track the event loop for cancellation
+        self.controller_task = None  # Track the controller task for cancellation
 
         if not OPENHANDS_AVAILABLE:
             raise ImportError("OpenHands is not available. Please install it or check the path.")
@@ -333,14 +335,17 @@ Your solution should be efficient and correct. Use standard algorithms and data 
             from openhands.core.main import create_runtime, run_controller
             from openhands.events.action.message import MessageAction
             from openhands.utils.async_utils import call_async_from_sync
-            
+
+            # Store the event loop for cancellation
+            self.event_loop = asyncio.get_event_loop()
+
             # Ensure config exists (create if not already done)
             if not hasattr(self, 'oh_config') or self.oh_config is None:
                 self.oh_config = self._create_openhands_config()
-            
+
             # Create runtime following evaluation harness pattern
             self.runtime = create_runtime(self.oh_config)
-            
+
             # Connect runtime using proper evaluation harness pattern
             call_async_from_sync(self.runtime.connect)
             logger.debug("OpenHands runtime connected")
@@ -350,7 +355,10 @@ Your solution should be efficient and correct. Use standard algorithms and data 
 
             # Create initial user action with the prompt (new API)
             initial_action = MessageAction(content=prompt)
-            
+
+            # Store the current task for cancellation
+            self.controller_task = asyncio.current_task()
+
             # Run the controller (new API)
             self.state = await run_controller(
                 config=self.oh_config,
@@ -359,10 +367,15 @@ Your solution should be efficient and correct. Use standard algorithms and data 
                 fake_user_response_fn=self._user_response_fn,
                 headless_mode=True
             )
-            
+
             logger.debug(f"OpenHands completed with state: {self.state}")
             self.is_complete = True
-            
+
+        except asyncio.CancelledError:
+            logger.debug("OpenHands controller was cancelled")
+            self.is_complete = True
+            # Re-raise to ensure proper cleanup
+            raise
         except Exception as e:
             logger.error(f"Error running OpenHands: {e}")
             import traceback
@@ -396,6 +409,9 @@ Your solution should be efficient and correct. Use standard algorithms and data 
         """Run OpenHands synchronously using asyncio."""
         try:
             asyncio.run(self._run_openhands_async(prompt))
+        except asyncio.CancelledError:
+            logger.debug("OpenHands sync runner was cancelled")
+            self.is_complete = True
         except Exception as e:
             logger.error(f"Error in sync OpenHands runner: {e}")
             self.is_complete = True
@@ -438,7 +454,26 @@ Your solution should be efficient and correct. Use standard algorithms and data 
             logger.debug("Starting OpenHands termination process")
             self.is_complete = True
 
-            # Try to close runtime gracefully first
+            # Cancel the controller task if it's running
+            if self.controller_task and self.event_loop:
+                try:
+                    logger.debug("Cancelling OpenHands controller task")
+                    # Schedule cancellation in the event loop running in the thread
+                    self.event_loop.call_soon_threadsafe(self.controller_task.cancel)
+                except Exception as e:
+                    logger.warning(f"Error cancelling controller task: {e}")
+
+            # Wait for thread to complete (with longer timeout for graceful shutdown)
+            if self.controller_thread and self.controller_thread.is_alive():
+                self.controller_thread.join(timeout=10.0)
+                if self.controller_thread.is_alive():
+                    logger.warning("OpenHands thread did not terminate gracefully after cancellation")
+                    # Thread didn't terminate, we need to force cleanup
+                    self._force_cleanup_processes()
+                else:
+                    logger.debug("OpenHands thread terminated gracefully after cancellation")
+
+            # Try to close runtime if not already closed
             if self.runtime:
                 try:
                     # Try sync close method if available
@@ -447,14 +482,6 @@ Your solution should be efficient and correct. Use standard algorithms and data 
                         logger.debug("Runtime closed successfully")
                 except Exception as e:
                     logger.warning(f"Error during runtime cleanup: {e}")
-
-            # Wait for thread to complete (with timeout)
-            if self.controller_thread and self.controller_thread.is_alive():
-                self.controller_thread.join(timeout=5.0)
-                if self.controller_thread.is_alive():
-                    logger.warning("OpenHands thread did not terminate gracefully")
-                    # Thread didn't terminate, we need to force cleanup
-                    self._force_cleanup_processes()
 
             # Clean up any tracked child processes
             self._cleanup_child_processes()

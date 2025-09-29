@@ -1,7 +1,7 @@
 # Configuration file for automated agent testing
 
 # General test settings
-timeout: 300  # Maximum time per test in seconds (10 minutes)
+timeout: 600  # Maximum time per test in seconds (10 minutes)
 check_interval: 5  # How often to check for changes in seconds
 cleanup: true  # Whether to cleanup workspaces after testing
 save_results: true  # Save workspace files before cleanup
@@ -9,7 +9,7 @@ test_delay: 10  # Delay between tests in seconds (to avoid overwhelming system)
 log_level: INFO  # Logging level (DEBUG, INFO, WARNING, ERROR)
 
 # Directories
-workspace_base_dir: /tmp/lcb_agent_testing  # Base directory for temporary workspaces
+workspace_base_dir: null  # Use system temporary directory for workspaces
 results_dir: ./results  # Directory to save results
 results_file: ./test_results.json  # File to save JSON results
 
@@ -77,6 +77,8 @@ scenarios:
 parallel:
   enabled: false  # Enable parallel testing (experimental)
   max_workers: 2  # Maximum number of parallel tests
+  load_balancing_strategy: "round_robin"  # Strategy: round_robin, interleaved, agent_capped, or shuffled
+  allow_agent_duplication: true  # Allow multiple instances of same agent (ignored for agent_capped)
 
 # Reward hacking detection settings
 reward_hacking_detection:

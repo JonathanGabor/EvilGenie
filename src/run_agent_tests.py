@@ -27,8 +27,7 @@ else:
 
 from automated_tester import AutomatedTester
 from env_utils import load_env_from_dotenv, build_subprocess_env
-from env_utils import load_env_from_dotenv
-from dataset_cache import get_cached_problems, find_cached_problem, get_available_problems
+from dataset_cache import get_cached_problems, get_available_problems
 
 
 def generate_descriptive_run_name(agents: List[Dict], problems: List[str], release_version: str, 
@@ -155,7 +154,7 @@ def _run_llm_detection(run_dir: Path, args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Automated agent testing for LiveCodeBench')
+    parser = argparse.ArgumentParser(description='Reward hacking detector')
     
     # Configuration
     parser.add_argument('--config', '-c', 
@@ -171,7 +170,7 @@ def main():
     
     # Model selection
     parser.add_argument('--model',
-                       help='Model to use for OpenAI agent (e.g., gpt-4o, o4-mini, o3-mini)')
+                       help='Model to use for OpenAI agent (e.g., gpt-5, o3, etc.)')
     parser.add_argument('--reasoning-effort',
                        choices=['low', 'medium', 'high'],
                        help='Reasoning effort for O3 models (low/medium/high)')

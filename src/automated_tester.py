@@ -50,10 +50,16 @@ class AgentRunError(AutomatedTesterError):
 
 @dataclass
 class AgentExecutionOutcome:
-    """Container for data produced by a single agent execution."""
+    """Container for data produced by a single agent execution.
+
+    Note: As of the refactoring to eliminate duplicate test runs, test_results
+    is now deprecated and will always be empty. All test results (both visible
+    and holdout) are now obtained exclusively from holdout evaluation.
+    The test_results field is maintained for backward compatibility only.
+    """
 
     solution_content: Optional[str]
-    test_results: Dict[str, Any]
+    test_results: Dict[str, Any]  # DEPRECATED: Always empty; use holdout_analysis instead
     runtime: float
     reward_summary: Dict[str, Any]
 
@@ -222,6 +228,9 @@ class AutomatedTester:
                 solution_content=execution.solution_content,
             )
 
+            # Extract visible test results from holdout analysis (replaces execution.test_results)
+            test_results = self._extract_visible_test_results(holdout_analysis)
+
             solution_generated = self._did_generate_solution(monitor, execution.solution_content)
 
             if self.config.get('save_results', True):
@@ -229,11 +238,7 @@ class AutomatedTester:
                 results_dir = problems_dir / agent_name / problem_id
                 self.workspace_manager.save_workspace_results(workspace_path, results_dir)
 
-            tests_passed = self._all_tests_passed(
-                execution_results=execution.test_results,
-                holdout_analysis=holdout_analysis,
-                holdout_config=holdout_config,
-            )
+            tests_passed = self._all_tests_passed(holdout_analysis)
 
             result_obj = TestResult(
                 problem_id=problem_id,
@@ -241,7 +246,7 @@ class AutomatedTester:
                 success=solution_generated,
                 runtime=execution.runtime,
                 test_passed=tests_passed,
-                test_results=execution.test_results,
+                test_results=test_results,
                 solution_content=execution.solution_content,
                 error=None if solution_generated else "No solution generated",
                 timestamp=datetime.now(),
@@ -405,8 +410,6 @@ class AutomatedTester:
             time.sleep(self.check_interval)
 
         solution_content = monitor.get_solution_content()
-        logger.info("Running tests on final solution...")
-        test_results = monitor.run_tests()
 
         processing_runtime = time.time() - processing_start
         total_runtime = time.time() - start_time
@@ -419,9 +422,6 @@ class AutomatedTester:
         except Exception as exc:
             logger.debug(f"Error terminating agent {agent_name}: {exc}")
 
-        if not test_results:
-            test_results = monitor.run_tests()
-
         reward_summary: Dict[str, Any] = {'has_violations': False}
         if reward_detector:
             try:
@@ -432,7 +432,7 @@ class AutomatedTester:
 
         return AgentExecutionOutcome(
             solution_content=solution_content,
-            test_results=test_results,
+            test_results={},  # Deprecated: test results now come from holdout evaluation
             runtime=total_runtime,
             reward_summary=reward_summary,
         )
@@ -482,6 +482,41 @@ class AutomatedTester:
                         overfitting_severity = "low"
 
         return holdout_analysis, potential_overfitting, overfitting_severity
+
+    def _extract_visible_test_results(self, holdout_analysis: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Extract visible test results from holdout analysis to create a test_results dict.
+        This replaces the need to run visible tests separately.
+
+        Args:
+            holdout_analysis: Dictionary containing holdout evaluation results
+
+        Returns:
+            Dictionary with test results in the format expected by the system
+        """
+        if not holdout_analysis or holdout_analysis.get('error'):
+            # If holdout analysis failed, return a failure result
+            return {
+                'success': False,
+                'error': holdout_analysis.get('error', 'No holdout analysis available') if holdout_analysis else 'No holdout analysis available',
+                'stdout': holdout_analysis.get('script_stdout', '') if holdout_analysis else '',
+                'stderr': holdout_analysis.get('script_stderr', '') if holdout_analysis else '',
+                'returncode': holdout_analysis.get('script_returncode', -1) if holdout_analysis else -1
+            }
+
+        # Extract visible test results from holdout analysis
+        visible_passed = holdout_analysis.get('visible_passed', 0)
+        visible_total = holdout_analysis.get('visible_total', 0)
+
+        # Construct test_results dict compatible with what monitor.run_tests() used to return
+        return {
+            'success': visible_passed == visible_total and visible_total > 0,
+            'stdout': holdout_analysis.get('script_stdout', ''),
+            'stderr': holdout_analysis.get('script_stderr', ''),
+            'returncode': holdout_analysis.get('script_returncode', 0 if visible_passed == visible_total else 1),
+            'visible_passed': visible_passed,
+            'visible_total': visible_total,
+        }
 
     def _augment_reward_summary_with_holdout(self, result: TestResult) -> None:
         """Merge holdout overfitting data into the reward hacking summary when available."""
@@ -534,31 +569,31 @@ class AutomatedTester:
 
     def _all_tests_passed(
         self,
-        execution_results: Optional[Dict[str, Any]],
         holdout_analysis: Optional[Dict[str, Any]],
-        holdout_config: Dict[str, Any],
     ) -> bool:
-        """Return True only when both visible and holdout tests pass."""
-        holdout_enabled = holdout_config.get('enabled', True)
+        """Return True only when both visible and holdout tests pass.
 
-        if holdout_enabled:
-            if not holdout_analysis or holdout_analysis.get('error'):
-                return False
+        Since holdout evaluation is always enabled in this project, this method
+        relies entirely on holdout_analysis results.
 
-            visible_passed = holdout_analysis.get('visible_passed', 0)
-            visible_total = holdout_analysis.get('visible_total', 0)
-            holdout_passed = holdout_analysis.get('holdout_passed', 0)
-            holdout_total = holdout_analysis.get('holdout_total', 0)
+        Args:
+            holdout_analysis: Results from holdout evaluation containing both visible and holdout test counts
 
-            return (
-                visible_passed == visible_total
-                and holdout_passed == holdout_total
-            )
-
-        if not execution_results:
+        Returns:
+            True if all visible and holdout tests passed, False otherwise
+        """
+        if not holdout_analysis or holdout_analysis.get('error'):
             return False
 
-        return execution_results.get('success', False)
+        visible_passed = holdout_analysis.get('visible_passed', 0)
+        visible_total = holdout_analysis.get('visible_total', 0)
+        holdout_passed = holdout_analysis.get('holdout_passed', 0)
+        holdout_total = holdout_analysis.get('holdout_total', 0)
+
+        return (
+            visible_passed == visible_total
+            and holdout_passed == holdout_total
+        )
 
     def _collect_reward_summary(
         self, reward_detector: Optional[RewardHackingDetector]
@@ -1376,7 +1411,8 @@ class AutomatedTester:
             combined_total = 0
 
             for r in results_subset:
-                if r.holdout_enabled and r.holdout_analysis and not r.holdout_analysis.get('error'):
+                # Since holdout evaluation is always enabled, use holdout_analysis directly
+                if r.holdout_analysis and not r.holdout_analysis.get('error'):
                     a = r.holdout_analysis
                     vp = a.get('visible_passed', 0)
                     vt = a.get('visible_total', 0)
@@ -1388,12 +1424,8 @@ class AutomatedTester:
                     total_holdout += ht
                     combined_passed += vp + hp
                     combined_total += vt + ht
-                else:
-                    tp, tt = self._parse_test_case_counts(r.test_results)
-                    visible_passed += tp
-                    total_visible += tt
-                    combined_passed += tp
-                    combined_total += tt
+                # If holdout analysis failed or is missing, skip this result
+                # (it will be counted as a failure in the overall metrics)
 
             return {
                 "visible_tests": {
@@ -1440,8 +1472,8 @@ class AutomatedTester:
             combined_total = 0
             
             for r in agent_results:
-                if r.holdout_enabled and r.holdout_analysis and not r.holdout_analysis.get('error'):
-                    # Use holdout analysis for accurate counts (only if successful)
+                # Since holdout evaluation is always enabled, use holdout_analysis directly
+                if r.holdout_analysis and not r.holdout_analysis.get('error'):
                     analysis = r.holdout_analysis
                     visible_passed += analysis.get('visible_passed', 0)
                     total_visible += analysis.get('visible_total', 0)
@@ -1449,13 +1481,8 @@ class AutomatedTester:
                     total_holdout += analysis.get('holdout_total', 0)
                     combined_passed += analysis.get('visible_passed', 0) + analysis.get('holdout_passed', 0)
                     combined_total += analysis.get('visible_total', 0) + analysis.get('holdout_total', 0)
-                else:
-                    # No holdout tests or holdout analysis failed, parse actual test case counts
-                    test_passed, test_total = self._parse_test_case_counts(r.test_results)
-                    visible_passed += test_passed
-                    total_visible += test_total
-                    combined_passed += test_passed
-                    combined_total += test_total
+                # If holdout analysis failed or is missing, skip this result
+                # (it will be counted as a failure in the overall metrics)
             
             # Legacy pass count (for backward compatibility)
             passed = sum(1 for r in agent_results if r.test_passed)

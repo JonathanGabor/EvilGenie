@@ -5,8 +5,9 @@ Claude Code agent runner implementation.
 import subprocess
 import time
 import logging
-import anyio
-from typing import Dict, Any
+import asyncio
+import threading
+from typing import Dict, Any, Optional
 
 from .base import AgentRunner
 from env_utils import build_subprocess_env, provider_env_keys
@@ -29,8 +30,10 @@ class ClaudeCodeRunner(AgentRunner):
     def __init__(self, workspace_path: str, config: Dict[str, Any]):
         super().__init__(workspace_path, config)
         self.messages = []
-        self.sdk_thread = None
+        self.sdk_task: Optional[asyncio.Task] = None
+        self.sdk_thread: Optional[threading.Thread] = None
         self.is_complete = False
+        self.event_loop: Optional[asyncio.AbstractEventLoop] = None
     
     def launch(self) -> bool:
         """Launch Claude Code with the problem prompt."""
@@ -55,11 +58,41 @@ class ClaudeCodeRunner(AgentRunner):
                 pass
             
             if CLAUDE_SDK_AVAILABLE:
-                # Use Python SDK in a separate thread
-                import threading
+                # Use Python SDK with asyncio
                 self.start_time = time.time()
-                self.sdk_thread = threading.Thread(target=self._run_claude_sdk_sync, args=(prompt,))
-                self.sdk_thread.start()
+
+                # Create or get event loop
+                try:
+                    self.event_loop = asyncio.get_running_loop()
+                    # We're already in an async context
+                    self.sdk_task = asyncio.create_task(self._run_claude_sdk(prompt))
+                except RuntimeError:
+                    # No running loop, create a new one in a thread to avoid blocking
+                    self.event_loop = asyncio.new_event_loop()
+
+                    def run_loop():
+                        asyncio.set_event_loop(self.event_loop)
+                        try:
+                            # Create the task within the event loop context
+                            self.sdk_task = self.event_loop.create_task(self._run_claude_sdk(prompt))
+                            self.event_loop.run_until_complete(self.sdk_task)
+                        except asyncio.CancelledError:
+                            logger.debug("Claude Code SDK task loop cancelled")
+                        except Exception as e:
+                            logger.error(f"Error in Claude Code SDK event loop: {e}")
+                        finally:
+                            # Clean up the event loop
+                            try:
+                                self.event_loop.close()
+                            except Exception:
+                                pass
+
+                    self.sdk_thread = threading.Thread(target=run_loop, daemon=True)
+                    self.sdk_thread.start()
+
+                    # Give the thread a moment to start and create the task
+                    time.sleep(0.1)
+
                 logger.debug(f"Launched Claude Code SDK in {self.workspace_path}")
                 return True
             else:
@@ -70,13 +103,6 @@ class ClaudeCodeRunner(AgentRunner):
             logger.error(f"Failed to launch Claude Code: {e}")
             return False
     
-    def _run_claude_sdk_sync(self, prompt: str):
-        """Run Claude Code SDK synchronously using anyio."""
-        try:
-            anyio.run(self._run_claude_sdk, prompt)
-        except Exception as e:
-            logger.error(f"Error running Claude Code SDK: {e}")
-            self.is_complete = True
     
     async def _run_claude_sdk(self, prompt: str):
         """Run Claude Code using the Python SDK."""
@@ -84,23 +110,29 @@ class ClaudeCodeRunner(AgentRunner):
             options = ClaudeCodeOptions(
                 cwd=self.workspace_path,
                 permission_mode="bypassPermissions",  # Auto-accept all tool permissions (edits, bash, etc.)
-                model="claude-sonnet-4-20250514"
+                model="claude-sonnet-4-5-20250929"
             )
             logger.info("Running Claude Code SDK")
-            
+
             async for message in query(prompt=prompt, options=options):
                 self.messages.append(message)
                 logger.debug(f"Claude Code message: {message}")
-            
+
             self.is_complete = True
             logger.debug("Claude Code SDK completed")
-            
+
             # Save the full conversation log
             self._save_conversation_log()
-            
+
+        except asyncio.CancelledError:
+            logger.info("Claude Code SDK task was cancelled")
+            self.is_complete = True
+            self._save_conversation_log()
+            raise  # Re-raise to properly handle cancellation
         except Exception as e:
             logger.error(f"Error in Claude Code SDK: {e}")
             self.is_complete = True
+            self._save_conversation_log()
     
     def _save_conversation_log(self):
         """Save the full conversation log to agent.log file."""
@@ -152,20 +184,39 @@ class ClaudeCodeRunner(AgentRunner):
     
     def is_running(self) -> bool:
         """Check if Claude Code is still running."""
-        if CLAUDE_SDK_AVAILABLE and self.sdk_thread:
-            return self.sdk_thread.is_alive() and not self.is_complete
+        if CLAUDE_SDK_AVAILABLE and hasattr(self, 'sdk_task') and self.sdk_task:
+            # Check if task exists and is not done
+            try:
+                return not self.sdk_task.done() and not self.is_complete
+            except Exception:
+                # Task might not be created yet if thread is still starting
+                return not self.is_complete
         elif hasattr(self, 'process') and self.process:
             return self.process.poll() is None
         return False
     
     def terminate(self) -> None:
         """Terminate Claude Code process."""
-        if CLAUDE_SDK_AVAILABLE and self.sdk_thread:
-            if self.sdk_thread.is_alive():
-                # Note: We can't really terminate the thread safely, 
-                # but we can mark it as complete
+        if CLAUDE_SDK_AVAILABLE and self.sdk_task:
+            if not self.sdk_task.done():
+                # Cancel the asyncio task
                 self.is_complete = True
-                logger.debug("Marked Claude Code SDK as complete")
+
+                # Cancel the task in a thread-safe way
+                if self.event_loop and not self.event_loop.is_closed():
+                    self.event_loop.call_soon_threadsafe(self.sdk_task.cancel)
+                else:
+                    self.sdk_task.cancel()
+
+                logger.debug("Cancelled Claude Code SDK task")
+
+                # Wait for the thread to complete gracefully
+                if hasattr(self, 'sdk_thread') and self.sdk_thread and self.sdk_thread.is_alive():
+                    self.sdk_thread.join(timeout=2.0)
+                    if self.sdk_thread.is_alive():
+                        logger.warning("Claude Code SDK thread did not terminate within timeout")
+                    else:
+                        logger.debug("Claude Code SDK thread terminated gracefully")
         elif hasattr(self, 'process') and self.process and self.is_running():
             self.process.terminate()
             try:
