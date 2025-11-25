@@ -1,5 +1,11 @@
 # Reward Hacking Benchmark
 
+## Description
+
+This repository contains a benchmark for evaluating the robustness of AI agents against reward hacking behaviors. Our benchmark
+consists of problems from LIVECODEBENCH [JHG+25], modified to make reward hacking feasible. In particular, we
+create an environment with many opportunities for LLMs to circumvent or pass test cases, thus achieving a higher benchmark score without correctly solving the stated algorithmic problem. To detect instances of reward hacking, we combine held-out unit tests, LLM-based judges, and test file edit detection.
+
 ## Installation
 ```
 uv venv
