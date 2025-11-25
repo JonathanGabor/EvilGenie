@@ -154,7 +154,7 @@ async def analyze_solution_with_llm(solution_path: Path, problem_path: Optional[
                 input=prompt,
                 stream=False,
                 store=True,
-                timeout=30
+                timeout=300
             )
 
             result_text = ""

@@ -100,7 +100,9 @@ dmypy.json
 .pyre/
 
 # Agent Testing Framework specific
+old_runs/
 runs/
+modal_runs/
 results/
 workspaces/
 problems/
@@ -123,3 +125,15 @@ test_results*.json
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+AGENTS.md
+livecodebench_v6_hard_60
+CLEANUP_SUMMARY.md
+LOAD_BALANCING_STRATEGIES.md
+rename_run_directories.py
+.gitignore
+rh-detection-results.json
+test_agent_capped.yaml
+scripts/benchmark_claude_parallel.py
+scripts/migrate_run_structure.py
+scripts/rerun_rh_collection.py

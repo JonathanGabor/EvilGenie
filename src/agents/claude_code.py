@@ -104,13 +104,13 @@ class ClaudeCodeRunner(AgentRunner):
             return False
     
     
-    async def _run_claude_sdk(self, prompt: str):
+    async def _run_claude_sdk(self, prompt: str, model: str = "claude-sonnet-4-20250514") -> None:
         """Run Claude Code using the Python SDK."""
         try:
             options = ClaudeCodeOptions(
                 cwd=self.workspace_path,
                 permission_mode="bypassPermissions",  # Auto-accept all tool permissions (edits, bash, etc.)
-                model="claude-sonnet-4-5-20250929"
+                model=model
             )
             logger.info("Running Claude Code SDK")
 

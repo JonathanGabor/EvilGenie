@@ -286,11 +286,11 @@ class WorkspaceManager:
     def duplicate_workspace(self, base_workspace: Path, agent_name: str) -> Optional[Path]:
         """
         Duplicate a base workspace for a specific agent.
-        
+
         Args:
             base_workspace: Path to the base workspace to duplicate
             agent_name: Name of the agent that will use this workspace
-            
+
         Returns:
             Path to the duplicated workspace or None if failed
         """
@@ -313,6 +313,22 @@ class WorkspaceManager:
 
             logger.debug("Duplicating workspace from %s to %s", base_workspace, agent_workspace)
             shutil.copytree(base_workspace, agent_workspace)
+
+            # Copy holdout files from base workspace container to agent container
+            # This ensures they're available when saving results later
+            base_container_str = base_info.get("container_path")
+            if problem_id and base_container_str:
+                base_container = Path(base_container_str)
+                holdout_files = [
+                    f"{problem_id}_test_cases_holdout.json",
+                    f"{problem_id}_final_evaluation.py",
+                ]
+                for filename in holdout_files:
+                    src_file = base_container / filename
+                    if src_file.exists():
+                        dst_file = container_path / filename
+                        shutil.copy2(src_file, dst_file)
+                        logger.debug(f"Copied holdout file to agent container: {filename}")
 
             sandbox_profile = self._setup_sandbox_profile(agent_workspace)
             created_at = datetime.now()
@@ -464,11 +480,11 @@ class WorkspaceManager:
     def save_workspace_results(self, workspace_path: Path, results_dir: Path) -> bool:
         """
         Save important files from workspace before cleanup.
-        
+
         Args:
             workspace_path: Path to the workspace
             results_dir: Directory to save results to
-            
+
         Returns:
             True if successful, False otherwise
         """
@@ -478,16 +494,16 @@ class WorkspaceManager:
 
             metadata = self.get_workspace_info(workspace_path) or {}
 
-            # Files to save (expanded for unified structure)
+            # Files to save from workspace
             files_to_save = [
-                "solution.py",
-                "test_results.json",
-                "test.log",
-                "agent.log",
-                "problem.md",          # Problem description
-                "test.py",             # Test script
-                "test_cases.json",     # Visible test cases
-                "holdout_analysis.json" # Holdout test analysis if available
+                "solution.py",              # Agent's solution
+                "test_results.json",        # Test execution results
+                "test.log",                 # Test execution log
+                "agent.log",                # Agent output log
+                "problem.md",               # Problem description
+                "test.py",                  # Test script
+                "test_cases.json",          # Visible test cases
+                "evaluation_results.json",  # Holdout evaluation results (if exists)
             ]
 
             saved_files = []
@@ -498,33 +514,38 @@ class WorkspaceManager:
                     shutil.copy2(src_file, dst_file)
                     saved_files.append(filename)
 
-            # Capture holdout resources from the container if they exist
+            # Copy holdout files from the container directory
+            # These are needed for manual re-evaluation and analysis
             problem_id = metadata.get("problem_id")
             container_str = metadata.get("container_path")
+
             if problem_id and container_str:
                 container_path = Path(container_str)
-                holdout_sources = {
+
+                # Map container file names to simplified result names
+                holdout_files = {
                     f"{problem_id}_test_cases_holdout.json": "test_cases_holdout.json",
                     f"{problem_id}_final_evaluation.py": "final_evaluation.py",
                 }
-                for source_name, dest_name in holdout_sources.items():
+
+                for source_name, dest_name in holdout_files.items():
                     src_file = container_path / source_name
                     if src_file.exists():
                         dst_file = results_dir / dest_name
                         shutil.copy2(src_file, dst_file)
-                        if dest_name not in saved_files:
-                            saved_files.append(dest_name)
+                        saved_files.append(dest_name)
+                        logger.debug(f"Saved holdout file: {dest_name}")
 
-            # Save workspace metadata
+            # Save workspace metadata with list of saved files
             if metadata:
                 metadata["saved_files"] = saved_files
                 metadata_file = results_dir / "workspace_metadata.json"
                 with open(metadata_file, 'w') as f:
                     json.dump(metadata, f, indent=2, default=str)
-            
-            logger.info(f"Saved workspace results to {results_dir}")
+
+            logger.info(f"Saved workspace results to {results_dir} ({len(saved_files)} files)")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to save workspace results: {e}")
             return False

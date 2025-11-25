@@ -30,6 +30,49 @@ from problems import Platform, Difficulty
 from dataset_cache import get_cached_problems, find_cached_problem
 
 
+# Cache for loaded canonical splits
+_canonical_splits_cache = {}
+
+
+def load_canonical_splits(split_name=None):
+    """Load canonical splits from file, with caching.
+
+    Args:
+        split_name: Name of the split file (without .json extension).
+                   Defaults to 'v5v6_hard_154p'.
+
+    Returns:
+        Dict mapping problem_id to list of holdout indices, or None if not found.
+    """
+    global _canonical_splits_cache
+
+    if split_name is None:
+        split_name = 'v5v6_hard_154p'
+
+    if split_name in _canonical_splits_cache:
+        return _canonical_splits_cache[split_name]
+
+    split_file = Path(__file__).parent / 'canonical_splits' / f'{split_name}.json'
+    if not split_file.exists():
+        _canonical_splits_cache[split_name] = None
+        return None
+
+    try:
+        with open(split_file) as f:
+            data = json.load(f)
+
+        splits = {
+            pid: info['holdout_indices']
+            for pid, info in data.get('splits', {}).items()
+        }
+        _canonical_splits_cache[split_name] = splits
+        return splits
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"Warning: Failed to load canonical split {split_name}: {e}")
+        _canonical_splits_cache[split_name] = None
+        return None
+
+
 def sanitize_filename(name):
     """Convert problem title to safe directory name."""
     # Remove or replace unsafe characters
@@ -42,40 +85,64 @@ def sanitize_filename(name):
     return name
 
 
-def split_test_cases(test_cases, holdout_config=None):
+def split_test_cases(test_cases, holdout_config=None, problem_id=None):
     """
     Split test cases into visible (for agents) and holdout (for final evaluation).
-    
+
     Args:
         test_cases: List of test case dictionaries
         holdout_config: Configuration for holdout test cases
-        
+        problem_id: Problem ID for canonical split lookup (optional)
+
     Returns:
         Tuple of (visible_test_cases, holdout_test_cases)
     """
     if not holdout_config or not holdout_config.get('enabled', False):
         # If holdout is disabled, all test cases are visible
         return test_cases, []
-    
+
     total_cases = len(test_cases)
     if total_cases == 0:
         return [], []
-    
-    # Calculate number of holdout cases
+
+    # Check for canonical split first (default: enabled)
+    use_canonical = holdout_config.get('use_canonical', True)
+    canonical_split_name = holdout_config.get('canonical_split', None)
+
+    if use_canonical and problem_id:
+        canonical_splits = load_canonical_splits(canonical_split_name)
+        if canonical_splits and problem_id in canonical_splits:
+            # Use canonical split indices
+            holdout_indices = set(
+                i for i in canonical_splits[problem_id]
+                if 0 <= i < total_cases
+            )
+            if holdout_indices:
+                visible_cases = [
+                    tc for i, tc in enumerate(test_cases)
+                    if i not in holdout_indices
+                ]
+                holdout_cases = [
+                    tc for i, tc in enumerate(test_cases)
+                    if i in holdout_indices
+                ]
+                return visible_cases, holdout_cases
+
+    # Fall back to dynamic selection (random/last/balanced)
     holdout_percentage = holdout_config.get('holdout_percentage', 30)
     min_holdout = holdout_config.get('min_holdout_cases', 1)
     max_holdout = holdout_config.get('max_holdout_cases', 10)
-    
+
     holdout_count = max(min_holdout, min(max_holdout, math.ceil(total_cases * holdout_percentage / 100)))
     holdout_count = min(holdout_count, total_cases - 1)  # Ensure at least 1 visible test case
-    
+
     if holdout_count <= 0:
         return test_cases, []
-    
+
     # Select holdout cases based on method
     selection_method = holdout_config.get('selection_method', 'random')
     holdout_indices = set()
-    
+
     if selection_method == 'random':
         # Randomly select holdout cases
         holdout_indices = set(random.sample(range(total_cases), holdout_count))
@@ -89,17 +156,17 @@ def split_test_cases(test_cases, holdout_config=None):
     else:
         # Default to random if unknown method
         holdout_indices = set(random.sample(range(total_cases), holdout_count))
-    
+
     # Split the test cases
     visible_cases = []
     holdout_cases = []
-    
+
     for i, test_case in enumerate(test_cases):
         if i in holdout_indices:
             holdout_cases.append(test_case)
         else:
             visible_cases.append(test_case)
-    
+
     return visible_cases, holdout_cases
 
 
@@ -158,7 +225,7 @@ Difficulty: {problem.difficulty.value}
 """
 
 from typing import List, Optional, Dict, Set, Tuple
-
+import os
 
 def {func_name}({param_str}):
     """
@@ -949,7 +1016,9 @@ def create_problem_environment(problem, base_dir="problems", holdout_config=None
         })
     
     # Split test cases into visible and holdout
-    visible_test_cases, holdout_test_cases = split_test_cases(all_test_cases, holdout_config)
+    visible_test_cases, holdout_test_cases = split_test_cases(
+        all_test_cases, holdout_config, problem_id=problem.question_id
+    )
     
     if holdout_config and holdout_config.get('enabled', False):
         print(f"Test case split: {len(visible_test_cases)} visible, {len(holdout_test_cases)} holdout")
