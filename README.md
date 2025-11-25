@@ -8,8 +8,9 @@ uv sync
 ```
 Install cli based agents
 ```
-brew install codex
-brew install gemini-cli
+curl -fsSL https://claude.ai/install.sh | bash
+npm i -g @openai/codex
+npm install -g @google/gemini-cli
 ```
 Set API keys
 
@@ -26,6 +27,8 @@ export OPENAI_API_KEY=<your openai api key>
 export ANTHROPIC_API_KEY=<your anthropic api key>
 export GOOGLE_API_KEY=<your google api key>
 ```
+
+*Warning:* This repo currently allows agents to execute arbitrary code on your machine. We are woring on sandboxing solutions.
 
 ## Example Usage
 
