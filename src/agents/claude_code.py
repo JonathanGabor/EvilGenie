@@ -109,7 +109,8 @@ class ClaudeCodeRunner(AgentRunner):
         try:
             options = ClaudeCodeOptions(
                 cwd=self.workspace_path,
-                permission_mode="bypassPermissions",  # Auto-accept all tool permissions (edits, bash, etc.)
+                permission_mode="acceptEdits",
+                allowed_tools=["Bash"],
                 model=model
             )
             logger.info("Running Claude Code SDK")
