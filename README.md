@@ -1,3 +1,6 @@
+**This repo is deprecated.  Please see [evilgenie_inspect](https://github.com/JonathanGabor/evilgenie_inspect) for the current implementation fo evil_genie.**
+
+
 # Reward Hacking Benchmark
 
 ## Description
